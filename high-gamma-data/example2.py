@@ -15,7 +15,7 @@ if not hasattr(np, "bool"):
 if not hasattr(np, "complex"):
     np.complex = complex
     
-from braindecode.datasets.bbci import  BBCIDataset
+from braindecode.datasets.bcic_iv_2a import  BCICompetition4Set2A
 from braindecode.datautil.signalproc import highpass_cnt
 import torch.nn.functional as F
 import torch as th
@@ -43,14 +43,14 @@ log = logging.getLogger(__name__)
 log.setLevel('DEBUG')
 
 
-def load_bbci_data(filename, low_cut_hz, debug=False):
+def load_bbci_data(filename,  labels_filename, low_cut_hz, debug=False):
     load_sensor_names = None
     if debug:
         load_sensor_names = ['C3', 'C4', 'C2']
     # we loaded all sensors to always get same cleaning results independent of sensor selection
     # There is an inbuilt heuristic that tries to use only EEG channels and that definitely
     # works for datasets in our paper
-    loader = BBCIDataset(filename, load_sensor_names=load_sensor_names)
+    loader = BCICompetition4Set2A(filename,  load_sensor_names=load_sensor_names)
 
     log.info("Loading data...")
     cnt = loader.load()
@@ -59,8 +59,8 @@ def load_bbci_data(filename, low_cut_hz, debug=False):
     # larger than +- 800 inside them and remember them for removal later
     log.info("Cutting trials...")
 
-    marker_def = OrderedDict([('Right Hand', [1]), ('Left Hand', [2],),
-                              ('Rest', [3]), ('Feet', [4])])
+    marker_def = OrderedDict([('Left Hand', [1]), ('Right Hand', [2]),
+                          ('Feet', [3]), ('Tongue', [4])])
     clean_ival = [0, 4000]
 
     set_for_cleaning = create_signal_target_from_raw_mne(cnt, marker_def,
@@ -74,20 +74,8 @@ def load_bbci_data(filename, low_cut_hz, debug=False):
         np.mean(clean_trial_mask) * 100))
 
     # now pick only sensors with C in their name
-    # as they cover motor cortex
-    C_sensors = ['FC5', 'FC1', 'FC2', 'FC6', 'C3', 'C4', 'CP5',
-                 'CP1', 'CP2', 'CP6', 'FC3', 'FCz', 'FC4', 'C5', 'C1', 'C2',
-                 'C6',
-                 'CP3', 'CPz', 'CP4', 'FFC5h', 'FFC3h', 'FFC4h', 'FFC6h',
-                 'FCC5h',
-                 'FCC3h', 'FCC4h', 'FCC6h', 'CCP5h', 'CCP3h', 'CCP4h', 'CCP6h',
-                 'CPP5h',
-                 'CPP3h', 'CPP4h', 'CPP6h', 'FFC1h', 'FFC2h', 'FCC1h', 'FCC2h',
-                 'CCP1h',
-                 'CCP2h', 'CPP1h', 'CPP2h']
-    if debug:
-        C_sensors = load_sensor_names
-    cnt = cnt.pick_channels(C_sensors)
+    if debug and load_sensor_names is not None:
+        cnt = cnt.pick_channels(load_sensor_names)
 
     # Further preprocessings as descibed in paper
     log.info("Resampling...")
@@ -114,17 +102,13 @@ def load_bbci_data(filename, low_cut_hz, debug=False):
 
 
 def load_train_valid_test(
-        train_filename, test_filename, low_cut_hz, debug=False):
-    log.info("Loading train...")
-    full_train_set = load_bbci_data(
-        train_filename, low_cut_hz=low_cut_hz, debug=debug)
-
-    log.info("Loading test...")
-    test_set = load_bbci_data(
-        test_filename, low_cut_hz=low_cut_hz, debug=debug)
-    valid_set_fraction = 0.8
-    train_set, valid_set = split_into_two_sets(full_train_set,
-                                               valid_set_fraction)
+        train_filename, test_filename, train_labels_filename,test_labels_filename, low_cut_hz, debug=False):
+    log.info("Loading full subject data from training session...")
+    full_set = load_bbci_data(
+        train_filename, train_labels_filename, low_cut_hz=low_cut_hz, debug=debug)
+    
+    train_valid_set, test_set = split_into_two_sets(full_set, first_set_fraction=0.8)
+    train_set, valid_set = split_into_two_sets(train_valid_set, first_set_fraction=0.8)
 
     log.info("Train set with {:4d} trials".format(len(train_set.X)))
     if valid_set is not None:
@@ -134,7 +118,7 @@ def load_train_valid_test(
     return train_set, valid_set, test_set
 
 
-def run_exp_on_high_gamma_dataset(train_filename, test_filename,
+def run_exp_on_high_gamma_dataset(train_filename, test_filename,train_labels_filename, test_labels_filename,
                   low_cut_hz, model_name,
                   max_epochs, max_increase_epochs,
                   np_th_seed,
@@ -146,6 +130,8 @@ def run_exp_on_high_gamma_dataset(train_filename, test_filename,
     train_set, valid_set, test_set = load_train_valid_test(
         train_filename=train_filename,
         test_filename=test_filename,
+        train_labels_filename=train_labels_filename,
+        test_labels_filename=test_labels_filename,
         low_cut_hz=low_cut_hz, debug=debug)
     if debug:
         max_epochs = 4
@@ -238,13 +224,13 @@ if __name__ == '__main__':
         stream=sys.stdout
     )
 
-    data_folder = '/home/jovyan/eeg-repro/high-gamma-data/data'
+    data_folder = '/home/jovyan/projects/eegnet-replication/data/raw_data'
     max_epochs = 800
     max_increase_epochs = 80
     model_name = 'shallow'
     low_cut_hz = 4
     debug = False
-    results_file = 'shallow_4hz_results.csv'
+    results_file = 'shallow_2a_4hz_results.csv'
 
     completed = set()
     if os.path.exists(results_file):
@@ -255,7 +241,7 @@ if __name__ == '__main__':
 
     all_results = []
 
-    for subject_id in range(1, 15):
+    for subject_id in range(1, 10):
         for np_th_seed in [0, 1, 2]:
             if (subject_id, np_th_seed) in completed:
                 log.info(f"Skipping subject={subject_id}, seed={np_th_seed} (already done)")
@@ -263,11 +249,13 @@ if __name__ == '__main__':
 
             log.info(f"Starting subject={subject_id}, seed={np_th_seed}")
 
-            train_filename = os.path.join(data_folder, f'train/{subject_id}.mat')
-            test_filename = os.path.join(data_folder, f'test/{subject_id}.mat')
-
+            train_filename = os.path.join(data_folder, f'A0{subject_id}T.gdf')
+            test_filename = train_filename
+            train_labels_filename = None
+            test_labels_filename = None
             exp = run_exp_on_high_gamma_dataset(
                 train_filename, test_filename,
+                train_labels_filename, test_labels_filename,
                 low_cut_hz, model_name,
                 max_epochs, max_increase_epochs,
                 np_th_seed,
