@@ -1,0 +1,10 @@
+env/
+braindecode-legacy/
+__pycache__/
+*.pyc
+*.log
+*.zip
+*.csv
+*.mat
+*.gdf
+high-gamma-data/data/
