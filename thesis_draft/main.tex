@@ -1,0 +1,468 @@
+\documentclass[conference]{IEEEtran}
+
+% -------------------------------------------------
+% Packages
+% -------------------------------------------------
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+
+% -------------------------------------------------
+% Hyperlink settings
+% -------------------------------------------------
+\hypersetup{
+colorlinks=true,
+linkcolor=black,
+citecolor=black,
+urlcolor=blue
+}
+
+% -------------------------------------------------
+% Table column helpers
+% -------------------------------------------------
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+
+% -------------------------------------------------
+% Title
+% -------------------------------------------------
+\title{
+Evaluating Synthetic EEG Generation Methods for Motor Imagery Classification
+}
+
+\author{
+\IEEEauthorblockN{Alzbeta Rehakova}
+\IEEEauthorblockA{
+MSc Artificial Intelligence\
+Queen Mary University of London\
+}
+}
+
+\begin{document}
+
+\maketitle
+
+% -------------------------------------------------
+% Abstract
+% -------------------------------------------------
+\begin{abstract}
+(This is a draft version) The project aims to see whether synthetic EEG data can be useful for training motor imagery classifiers. Evaluates synthetic data through downstream classification performance. The current work includes a real-data baseline, several Gaussian synthetic EEG experiments, VAE/hvEEGNet reconstruction experiment and further planned work would be testing generative methods such as GANs, diffusion models, and transformer-based generation, followed by real-plus-synthetic training ratio experiments.
+\end{abstract}
+
+% -------------------------------------------------
+% Keywords
+% -------------------------------------------------
+\begin{IEEEkeywords}
+EEG, motor imagery, brain-computer interface, synthetic data generation, Gaussian sampling, VAE, GAN, diffusion models, transformers
+\end{IEEEkeywords}
+
+% -------------------------------------------------
+% 1. Introduction
+% -------------------------------------------------
+\section{Introduction}
+
+EEG data is time consuming to collect and is also noisy, subject-specific, and varied across recording sessions. Because of this, synthetic EEG generation could be useful if the generated data preserves information that helps a classifier learn meaningful motor imagery patterns.
+
+The aim of this project is to test whether synthetic EEG can be used to train a classifier that still works on real EEG. The focus is not just on whether synthetic EEG is mathematically close to real EEG, but whether it is actually useful for real data classification.
+
+\vspace{0.5em}
+
+Setup:
+
+\begin{itemize}
+\item establish a real-data classification baseline (completed);
+\item generate synthetic EEG using different methods(in process);
+\item train the same classifier on synthetic EEG(in process);
+\item keep validation and test data real(completed);
+\item compare synthetic-only performance against the real-data baseline(in process);
+\item test whether synthetic data can help as augmentation when mixed with real data(in process).
+\end{itemize}
+
+\vspace{1em}
+
+% -------------------------------------------------
+% 2. Research Aim and Questions
+% -------------------------------------------------
+\section{Research Aim and Questions}
+
+\subsection{Research Aim}
+
+The aim of this project is to evaluate whether synthetic EEG can replace or support real EEG training data for motor imagery classification.
+
+\vspace{0.5em}
+
+At this stage the project mainly tests a strict synthetic-only setup:
+
+\begin{quote}
+Train on synthetic EEG, validate and test on real EEG.
+\end{quote}
+
+Later, the project will also test whether synthetic EEG improves performance when added to real EEG in different increments, experimenting with real-to-synthetic data ratios.
+
+
+\vspace{1em}
+
+% -------------------------------------------------
+% 3. Related Work
+% -------------------------------------------------
+\section{Related Work}
+
+This section will be expanded later.
+
+\vspace{0.5em}
+
+Planned areas to cover:
+
+\begin{itemize}
+\item motor imagery EEG classification;
+\item Braindecode and cropped EEG decoding(internal EEG structure);
+\item synthetic EEG generation(important elements);
+\item Gaussian/statistical synthetic EEG baselines;
+\item VAE and reconstruction-based EEG generation;
+\item GAN-based EEG generation;
+\item diffusion-based EEG generation;
+\item transformer or sequence-based EEG generation.
+\end{itemize}
+
+
+\vspace{2em}
+
+% -------------------------------------------------
+% 4. Dataset
+% -------------------------------------------------
+\section{Dataset}
+
+The project uses BCI Competition IV Dataset 2a. The dataset contains motor imagery EEG recordings from nine subjects.
+
+The four motor imagery classes are:
+
+\begin{itemize}
+\item left hand;
+\item right hand;
+\item feet;
+\item tongue.
+\end{itemize}
+
+The dataset includes EEG and EOG channels. In this project, the EOG channels are removed and only the EEG channels are used. The current classifier pipeline uses 22 EEG channels.
+
+Each subject is processed separately because EEG is highly subject-specific(confirmed in results so far, refer to table2).
+
+\vspace{2em}
+
+% -------------------------------------------------
+% 5. Methodology
+% -------------------------------------------------
+\section{Methodology}
+
+This section is to clearly show what has been implemented so far, what issues were fixed and what the next experimental steps are.
+
+\vspace{0.5em}
+
+\subsection{Overall Evaluation Setup}
+
+The project uses a downstream classification setup. This means that synthetic EEG is evaluated by checking whether it can train a classifier that performs well on real EEG.
+
+The experimental design is:
+
+\begin{itemize}
+\item load and preprocess one subject's EEG data;
+\item split the data into train, validation, and test sets;
+\item train a real-data baseline classifier;
+\item generate synthetic EEG from the training split only;
+\item replace the real training EEG with synthetic EEG;
+\item keep validation and test EEG real;
+\item train the same classifier on the synthetic training data;
+\item evaluate on real validation and real test EEG.
+\end{itemize}
+
+This setup is intentionally strict. It tests whether synthetic data can replace real EEG during training. If a method does not work well here, it may still be useful later as augmentation.
+
+\vspace{0.5em}
+
+\subsection{Preprocessing and Classifier}
+
+Similar preprocessing pipelines are used across the baseline and Gaussian experiments:
+
+\begin{itemize}
+\item load the subject's GDF file;
+\item remove EOG channels;
+\item keep EEG channels only;
+\item apply artifact rejection;
+\item resample to 250 Hz;
+\item apply a 4 Hz high-pass filter;
+\item apply exponential running standardisation;
+\item extract the motor imagery trial window.
+\end{itemize}
+
+The downstream classifier is \texttt{ShallowFBCSPNet} from Braindecode. The classifier is kept fixed because the project is comparing synthetic data generation methods, not classifier architectures.
+
+Current classifier settings include:
+
+\begin{itemize}
+\item cropped decoding;
+\item batch size 60;
+\item Adam optimiser;
+\item learning rate 0.001;
+\item maximum 120 epochs;
+\item early stopping using validation misclassification;
+\item classifier seeds 0, 1, and 2.
+\end{itemize}
+
+The best epoch is selected using validation performance, and the test result is from that selected model.
+
+\vspace{0.5em}
+
+\subsection{Baseline and Gaussian Experiments}
+
+The baseline uses real EEG for training, validation, and testing. This gives the main reference point.
+
+The first synthetic method tested was Gaussian sampling. This was used as a simple statistical baseline. The Gaussian generator estimates mean and standard deviation from the real training data and samples synthetic EEG from:
+
+[
+X_{\text{synthetic}} \sim \mathcal{N}(\mu, \sigma^2)
+]
+
+The Gaussian experiments are subject-specific and only use each subject's own training data.
+
+Different Gaussian variants were tested to see which type of information matters:
+
+\begin{itemize}
+\item global Gaussian(subject only);
+\item channel-conditioned Gaussian;
+\item class-conditioned Gaussian;
+\item time-conditioned Gaussian;
+\item class + channel Gaussian;
+\item class + time Gaussian;
+\item channel + time Gaussian;
+\item class + channel + time Gaussian.
+\end{itemize}
+
+The current Gaussian results suggest that simple statistical matching is not enough. Even when conditioning on class, channel, or time, Gaussian-generated EEG performs worse than the real-data baseline, weak and just above the chance level. Suggesting that useful EEG information is not captured by independent mean and standard deviation sampling alone.
+
+\vspace{0.5em}
+
+\subsection{VAE hvEEGNet Reconstruction Experiment}
+
+After the Gaussian experiments, I moved to a VAE hvEEGNet reconstruction method.
+
+The VAE setup is different from Gaussian sampling because it learns a compressed latent representation of the EEG and reconstructs the signal from that representation. In this project, the VAE output is treated as reconstruction-based synthetic EEG.
+
+The VAE flow is:
+
+\begin{itemize}
+\item train the VAE model per subject;
+\item reconstruct the training EEG trials;
+\item save reconstructed trials as \texttt{.npz} files;
+\item load the reconstructed trials into the classifier pipeline;
+\item replace only the classifier training set with VAE reconstructions;
+\item keep validation and test EEG real.
+\end{itemize}
+
+I patched the Soft-DTW CUDA code because it failed during Numba compilation and fixed CUDA/Numba environment issues by setting up local CUDA toolkit paths and \texttt{libNVVM}/\texttt{libdevice}. I had to check the repository split logic to reduce leakage risk and forced a fixed split setup + saved split indices. Finally, exported VAE-compatible real splits for the downstream classifier.
+\end{itemize}
+
+Subjects 1 to 8 currently use VAE model seed 0. Subject 9 uses VAE model seed 1 because seed 0 failed due to an internal hierarchical KL error in the external repository. This is being documented rather than hidden. The downstream classifier still uses classifier seeds 0, 1, and 2, same as the baseline and the gaussian experiments.
+
+\vspace{0.5em}
+
+\subsection{Planned Next Experiments}
+
+I plan to test 2--3 additional synthetic generation methods if time allows.
+
+The most realistic next methods are:
+
+\begin{itemize}
+\item conditional GAN: generate class-specific EEG using a generator/discriminator setup;
+\item diffusion model: generate EEG through a denoising process;
+\item transformer or sequence model: model EEG as temporal patches or latent tokens.
+\end{itemize}
+
+The same evaluation setup will be used to see fair comparison:
+
+\begin{itemize}
+\item train generator only on real training EEG;
+\item generate synthetic training EEG;
+\item train \texttt{ShallowFBCSPNet} on synthetic EEG;
+\item validate and test on real EEG.
+\end{itemize}
+
+After finding the strongest synthetic method, I also want to test real + synthetic ratios. This would check whether synthetic EEG can help as augmentation even if it cannot fully replace real EEG.
+
+Possible ratios include:
+
+\begin{itemize}
+\item 100% real, 0% synthetic;
+\item 75% real, 25% synthetic;
+\item 50% real, 50% synthetic;
+\item 25% real, 75% synthetic;
+\item 0% real, 100% synthetic;
+\item real data plus one or more synthetic copies.
+\end{itemize}
+
+This could be further expanded by also testing this on very imbalanced datasets. 
+
+\vspace{0.5em}
+
+\subsection{Current Limitations}
+
+Current limitations to be careful about:
+
+\begin{itemize}
+\item baseline/Gaussian table currently has 8 subjects rather than 9, as subject 4 doesn't load in my classification setup;
+\item VAE reconstruction is not the same as fully EEG generation;
+\item Gaussian sampling does not model temporal/channel correlations properly;
+\end{itemize}
+
+\vspace{1em}
+
+% -------------------------------------------------
+% 6. Results
+% -------------------------------------------------
+\section{Results}
+
+This section will be completed after the all runs are finished.
+
+\vspace{0.5em}
+
+Current result handling:
+
+\begin{itemize}
+\item all results are been stored into a results table and averages are calculated;
+\item the main summary table reports mean validation accuracy, mean test accuracy, standard deviation, number of runs, number of subjects, and number of seeds, see table 1.
+\end{itemize}
+
+
+\begin{table*}[!t]
+\centering
+\caption{Summary of classification results across completed subjects and seeds. Accuracy values are reported as proportions.}
+\label{tab:main_results_summary}
+\resizebox{0.95\textwidth}{!}{%
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Method} & \textbf{Runs} & \textbf{Subjects} & \textbf{Seeds} & 
+\textbf{Mean Valid Acc.} & \textbf{Mean Test Acc.} & 
+\textbf{Std Test Acc.} & \textbf{Mean Last Test Acc.} \\
+\midrule
+Baseline (real EEG) & 24 & 8 & 3 & 1.0000 & 0.7191 & 0.1170 & 0.7464 \\
+VAE reconstruction & 27 & 9 & 3 & 0.9464 & 0.6219 & 0.1892 & 0.6341 \\
+Gaussian class & 24 & 8 & 3 & 0.7600 & 0.3886 & 0.1570 & 0.3958 \\
+Gaussian class + channel & 24 & 8 & 3 & 0.7047 & 0.3879 & 0.1497 & 0.3822 \\
+Gaussian channel & 24 & 8 & 3 & 0.7609 & 0.3621 & 0.1512 & 0.3657 \\
+Gaussian channel + time & 24 & 8 & 3 & 0.7745 & 0.3606 & 0.1367 & 0.3434 \\
+Gaussian global & 24 & 8 & 3 & 0.6295 & 0.3506 & 0.1348 & 0.3506 \\
+Gaussian class + time & 24 & 8 & 3 & 0.6486 & 0.3470 & 0.1358 & 0.3592 \\
+Gaussian time & 24 & 8 & 3 & 0.5969 & 0.3470 & 0.1283 & 0.3448 \\
+Gaussian class + channel + time & 24 & 8 & 3 & 0.5371 & 0.3348 & 0.0886 & 0.3290 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+
+\vspace{2em}
+
+
+\begin{table*}[t]
+\centering
+\caption{Subject-level mean best test accuracy for each experiment. Dashes indicate missing baseline/Gaussian results for that subject.}
+\label{tab:subject_level_results}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{c|cccccccccc}
+\toprule
+\textbf{Subject} & 
+\textbf{Baseline} & 
+\textbf{VAE} & 
+\textbf{G. Channel} & 
+\textbf{G. Ch.+Time} & 
+\textbf{G. Class} & 
+\textbf{G. Class+Ch.+Time} & 
+\textbf{G. Class+Ch.} & 
+\textbf{G. Class+Time} & 
+\textbf{G. Global} & 
+\textbf{G. Time} \\
+\midrule
+1 & 0.7816 & 0.6748 & 0.6207 & 0.4655 & 0.5805 & 0.4253 & 0.5230 & 0.5805 & 0.4368 & 0.4713 \\
+2 & 0.6149 & 0.4039 & 0.2644 & 0.2471 & 0.2701 & 0.2701 & 0.2644 & 0.2644 & 0.2586 & 0.2931 \\
+3 & 0.8218 & 0.8727 & 0.5000 & 0.4483 & 0.5057 & 0.4080 & 0.4885 & 0.3391 & 0.4770 & 0.4195 \\
+4 & -- & 0.5544 & -- & -- & -- & -- & -- & -- & -- & -- \\
+5 & 0.7644 & 0.2859 & 0.2874 & 0.2701 & 0.2529 & 0.2471 & 0.2816 & 0.2241 & 0.3276 & 0.3161 \\
+6 & 0.4885 & 0.5278 & 0.2471 & 0.2241 & 0.2299 & 0.2529 & 0.2356 & 0.2529 & 0.2299 & 0.2529 \\
+7 & 0.8621 & 0.8229 & 0.3103 & 0.3448 & 0.2586 & 0.2989 & 0.2701 & 0.2759 & 0.3103 & 0.2816 \\
+8 & 0.7356 & 0.7731 & 0.2931 & 0.4253 & 0.5575 & 0.3391 & 0.5632 & 0.3851 & 0.3678 & 0.3621 \\
+9 & 0.6839 & 0.6817 & 0.3736 & 0.4598 & 0.4540 & 0.4368 & 0.4770 & 0.4540 & 0.3966 & 0.3793 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+\begin{itemize}
+\item real-data baseline is clearly strongest;
+\item Gaussian synthetic-only methods perform much lower;
+\item VAE results look better than Gaussian but are not better then the baseline.
+\end{itemize}
+
+\vspace{4em}
+
+\subsection{Additional Results}
+
+To be added if GAN, diffusion, transformer, or ratio experiments are completed.
+
+\vspace{4em}
+
+% -------------------------------------------------
+% 7. Discussion
+% -------------------------------------------------
+\section{Discussion}
+
+This section will be expanded after the final results are complete.
+
+\vspace{0.5em}
+
+Points to discuss later:
+
+\begin{itemize}
+\item whether synthetic-only training is too strict;
+\item why Gaussian synthetic EEG performs poorly;
+\item whether VAE reconstruction preserves more useful EEG structure;
+\item whether subject-level differences explain some of the variation;
+\item whether learned generative methods close the gap to the real baseline;
+\item whether synthetic EEG is more useful as augmentation than replacement;
+\end{itemize}
+
+\vspace{2em}
+
+% -------------------------------------------------
+% 8. Conclusion
+% -------------------------------------------------
+\section{Conclusion}
+
+To be completed after the results and discussion are finalised.
+
+\vspace{0.5em}
+
+The likely conclusion direction so far is:
+
+\begin{itemize}
+\item real EEG training is still the strongest setup;
+\item Gaussian synthetic-only data is weak and loses important EEG structure;
+\item VAE reconstruction appears more promising but haven't been tried in combination with the real trained data;
+\item the next important step is testing stronger generative models and then real + synthetic augmentation ratios.
+\end{itemize}
+
+\vspace{2em}
+
+% -------------------------------------------------
+% References
+% -------------------------------------------------
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
