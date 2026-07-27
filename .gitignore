@@ -1,10 +1,83 @@
+# Python environments
 env/
-braindecode-legacy/
+vae-env/
+.venv/
+venv/
+
+# Python cache
 __pycache__/
-*.pyc
-*.log
-*.zip
-*.csv
-*.mat
-*.gdf
+*.py[cod]
+.pytest_cache/
+
+# Jupyter-generated files
+.ipynb_checkpoints/
+
+# Local CUDA and compiled dependencies
+high-gamma-data/.cuda-numba/
+
+# Raw EEG data
 high-gamma-data/data/
+high-gamma-data/raw_data/
+high-gamma-data/datasets/
+*.gdf
+*.edf
+*.bdf
+*.mat
+
+# Generated VAE data and checkpoints
+high-gamma-data/saved_vae*/
+high-gamma-data/saved_cvae*/
+high-gamma-data/saved_shared_cvae*/
+*.npz
+*.npy
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.zip
+
+# Logs and process files
+high-gamma-data/logs/
+*.log
+*.pid
+nohup.out
+
+# Generated result tables
+# Keep these private until the metrics and presentation are final.
+high-gamma-data/results/
+
+# Old and temporary project files
+high-gamma-data/_archive_not_needed_for_current_run/
+high-gamma-data/archive_old_scripts/
+high-gamma-data/*.bak
+high-gamma-data/*before_single_file_update*
+
+# External cloned repositories
+# Add a proper citation or submodule later if required.
+high-gamma-data/external/
+
+# Local notebooks and temporary summaries
+high-gamma-data/*.ipynb
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+
+# Credentials and secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# Local legacy dependency
+/braindecode-legacy/
+
+# Temporary project notes
+high-gamma-data/CURRENT_RUN_README.txt
+
+# Temporary summary/table notebook generators
+high-gamma-data/create_results_summary_notebook.py
+high-gamma-data/create_simple_results_table_notebook.py
