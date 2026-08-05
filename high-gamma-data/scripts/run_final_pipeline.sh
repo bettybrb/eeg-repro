@@ -15,6 +15,11 @@ METHODS="baseline,gaussian_unconditional,gaussian_channel,gaussian_class,gaussia
 cd "$PROJECT_ROOT"
 
 export PYTHONUNBUFFERED=1
+
+# Numba must see the local CUDA toolkit before Python starts.
+export CUDA_HOME="$PROJECT_ROOT/.cuda-numba"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib:$CUDA_HOME/lib64:$CUDA_HOME/nvvm/lib64:${LD_LIBRARY_PATH:-}"
+
 export MNE_DATA="$PROJECT_ROOT/data/raw_data"
 export MNE_DATASETS_BNCI_PATH="$PROJECT_ROOT/data/raw_data"
 
