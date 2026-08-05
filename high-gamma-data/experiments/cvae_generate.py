@@ -520,6 +520,8 @@ def train_subject(
     weight_decay,
     beta,
     kl_warmup_epochs,
+    minimum_epochs,
+    early_stopping_patience,
     use_cuda,
     overwrite,
     config,
@@ -695,7 +697,34 @@ def train_subject(
     best_validation_loss = float(
         "inf"
     )
+    best_validation_mse = float(
+        "inf"
+    )
+    best_validation_kl = float(
+        "inf"
+    )
     best_epoch = -1
+
+    # During KL warm-up the total objective changes between epochs.
+    # Model selection therefore begins only once the full beta value
+    # is active. Short smoke runs remain supported by beginning at
+    # their final epoch when they end before the warm-up completes.
+    selection_start_epoch = min(
+        max(1, kl_warmup_epochs),
+        epochs,
+    )
+    effective_minimum_epochs = min(
+        max(
+            minimum_epochs,
+            selection_start_epoch,
+        ),
+        epochs,
+    )
+
+    epochs_without_improvement = 0
+    epochs_completed = 0
+    stopped_early = False
+    training_history = []
 
     for epoch in range(
         1,
@@ -742,14 +771,43 @@ def train_subject(
             flush=True,
         )
 
-        if (
-            validation_metrics[0]
+        epochs_completed = epoch
+
+        training_history.append(
+            {
+                "epoch": epoch,
+                "beta": current_beta,
+                "train_total": train_metrics[0],
+                "train_mse": train_metrics[1],
+                "train_kl": train_metrics[2],
+                "validation_total": validation_metrics[0],
+                "validation_mse": validation_metrics[1],
+                "validation_kl": validation_metrics[2],
+            }
+        )
+
+        eligible_for_selection = (
+            epoch >= selection_start_epoch
+        )
+
+        improved = (
+            eligible_for_selection
+            and validation_metrics[0]
             < best_validation_loss
-        ):
+        )
+
+        if improved:
             best_validation_loss = (
                 validation_metrics[0]
             )
+            best_validation_mse = (
+                validation_metrics[1]
+            )
+            best_validation_kl = (
+                validation_metrics[2]
+            )
             best_epoch = epoch
+            epochs_without_improvement = 0
 
             torch.save(
                 {
@@ -769,6 +827,25 @@ def train_subject(
                     "validation_loss": (
                         best_validation_loss
                     ),
+                    "validation_mse": (
+                        best_validation_mse
+                    ),
+                    "validation_kl": (
+                        best_validation_kl
+                    ),
+                    "maximum_epochs": epochs,
+                    "minimum_epochs": (
+                        effective_minimum_epochs
+                    ),
+                    "early_stopping_patience": (
+                        early_stopping_patience
+                    ),
+                    "selection_start_epoch": (
+                        selection_start_epoch
+                    ),
+                    "kl_warmup_epochs": (
+                        kl_warmup_epochs
+                    ),
                     "latent_dim": (
                         latent_dim
                     ),
@@ -784,6 +861,91 @@ def train_subject(
                 },
                 checkpoint_file,
             )
+
+        elif eligible_for_selection:
+            epochs_without_improvement += 1
+
+        if (
+            epoch >= effective_minimum_epochs
+            and epochs_without_improvement
+            >= early_stopping_patience
+        ):
+            stopped_early = True
+
+            print(
+                "EARLY STOP | "
+                f"epoch={epoch} | "
+                f"best_epoch={best_epoch} | "
+                f"best_validation_loss="
+                f"{best_validation_loss:.6f}",
+                flush=True,
+            )
+            break
+
+    history_file = (
+        checkpoint_directory
+        / "training_history.npz"
+    )
+
+    np.savez_compressed(
+        history_file,
+        epoch=np.asarray(
+            [
+                row["epoch"]
+                for row in training_history
+            ],
+            dtype=np.int64,
+        ),
+        beta=np.asarray(
+            [
+                row["beta"]
+                for row in training_history
+            ],
+            dtype=np.float64,
+        ),
+        train_total=np.asarray(
+            [
+                row["train_total"]
+                for row in training_history
+            ],
+            dtype=np.float64,
+        ),
+        train_mse=np.asarray(
+            [
+                row["train_mse"]
+                for row in training_history
+            ],
+            dtype=np.float64,
+        ),
+        train_kl=np.asarray(
+            [
+                row["train_kl"]
+                for row in training_history
+            ],
+            dtype=np.float64,
+        ),
+        validation_total=np.asarray(
+            [
+                row["validation_total"]
+                for row in training_history
+            ],
+            dtype=np.float64,
+        ),
+        validation_mse=np.asarray(
+            [
+                row["validation_mse"]
+                for row in training_history
+            ],
+            dtype=np.float64,
+        ),
+        validation_kl=np.asarray(
+            [
+                row["validation_kl"]
+                for row in training_history
+            ],
+            dtype=np.float64,
+        ),
+    )
 
     if not checkpoint_file.exists():
         raise FileNotFoundError(
@@ -856,6 +1018,33 @@ def train_subject(
         best_validation_loss=(
             best_validation_loss
         ),
+        best_validation_mse=(
+            best_validation_mse
+        ),
+        best_validation_kl=(
+            best_validation_kl
+        ),
+        maximum_epochs=epochs,
+        minimum_epochs=(
+            effective_minimum_epochs
+        ),
+        epochs_completed=epochs_completed,
+        stopped_early=stopped_early,
+        early_stopping_patience=(
+            early_stopping_patience
+        ),
+        selection_start_epoch=(
+            selection_start_epoch
+        ),
+        kl_warmup_epochs=(
+            kl_warmup_epochs
+        ),
+        training_history_file=str(
+            history_file
+        ),
+        checkpoint_selection=(
+            "lowest validation total loss after KL warm-up"
+        ),
         conditioning=(
             "class label supplied to encoder and decoder"
         ),
@@ -921,12 +1110,12 @@ def main():
     parser.add_argument(
         "--epochs",
         type=int,
-        default=50,
+        default=CONFIG.cvae_max_epochs,
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=32,
+        default=CONFIG.cvae_batch_size,
     )
     parser.add_argument(
         "--latent-dim",
@@ -956,7 +1145,17 @@ def main():
     parser.add_argument(
         "--kl-warmup-epochs",
         type=int,
-        default=10,
+        default=CONFIG.cvae_kl_warmup_epochs,
+    )
+    parser.add_argument(
+        "--minimum-epochs",
+        type=int,
+        default=CONFIG.cvae_minimum_epochs,
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=CONFIG.cvae_early_stopping_patience,
     )
     parser.add_argument(
         "--cuda",
@@ -968,6 +1167,26 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.epochs < 1:
+        raise ValueError(
+            "--epochs must be at least 1"
+        )
+
+    if args.minimum_epochs < 1:
+        raise ValueError(
+            "--minimum-epochs must be at least 1"
+        )
+
+    if args.early_stopping_patience < 1:
+        raise ValueError(
+            "--early-stopping-patience must be at least 1"
+        )
+
+    if args.kl_warmup_epochs < 1:
+        raise ValueError(
+            "--kl-warmup-epochs must be at least 1"
+        )
 
     subjects = parse_int_list(
         args.subjects
@@ -994,6 +1213,12 @@ def main():
                 beta=args.beta,
                 kl_warmup_epochs=(
                     args.kl_warmup_epochs
+                ),
+                minimum_epochs=(
+                    args.minimum_epochs
+                ),
+                early_stopping_patience=(
+                    args.early_stopping_patience
                 ),
                 use_cuda=args.cuda,
                 overwrite=args.overwrite,

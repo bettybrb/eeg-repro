@@ -77,7 +77,10 @@ class ExperimentConfiguration:
 
     subject_numbers: tuple[int, ...] = tuple(range(1, 10))
     classifier_seeds: tuple[int, ...] = (0, 1, 2)
-    generator_seeds: tuple[int, ...] = (0,)
+    # Independent synthetic-data repetitions. These are separate
+    # from classifier seeds so generator and classifier variability can
+    # be quantified independently.
+    generator_seeds: tuple[int, ...] = (0, 1, 2)
 
     experiment_names: tuple[str, ...] = (
         "baseline",
@@ -110,6 +113,20 @@ class ExperimentConfiguration:
     weight_decay: float = 0.0
     max_epochs: int = 120
     max_increase_epochs: int = 30
+
+    # Source-aligned hvEEGNet reconstruction protocol. The published
+    # experiment used 80 epochs and a batch size of 30.
+    hveegnet_max_epochs: int = 80
+    hveegnet_batch_size: int = 30
+
+    # Pre-specified protocol for the exploratory conditional VAE.
+    # Checkpoint selection begins only after the KL warm-up so that
+    # validation losses are compared under the same full objective.
+    cvae_max_epochs: int = 100
+    cvae_minimum_epochs: int = 20
+    cvae_early_stopping_patience: int = 15
+    cvae_kl_warmup_epochs: int = 10
+    cvae_batch_size: int = 32
 
     debug: bool = False
     use_cuda: bool = True

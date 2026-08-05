@@ -573,6 +573,9 @@ def train_subject(
         method="vae_reconstruction",
         subject_id=subject_id,
         generator_seed=generator_seed,
+        maximum_epochs=epochs,
+        batch_size=batch_size,
+        checkpoint_selection="lowest validation loss",
         split_file=str(split.split_file),
         original_reconstruction_shape=np.asarray(
             original_shape
@@ -639,12 +642,12 @@ def main():
     parser.add_argument(
         "--epochs",
         type=int,
-        default=10,
+        default=CONFIG.hveegnet_max_epochs,
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=30,
+        default=CONFIG.hveegnet_batch_size,
     )
     parser.add_argument(
         "--cuda",
