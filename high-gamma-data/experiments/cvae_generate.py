@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import random
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -10,37 +12,57 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from pipeline.config import CONFIG
+from pipeline.splits import load_real_split
 
-def parse_int_list(value: str) -> tuple[int, ...]:
-    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
+def parse_int_list(value):
+    return [
+        int(item.strip())
+        for item in value.split(",")
+        if item.strip()
+    ]
 
 
-def set_seed(seed: int) -> None:
+def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
 class SharedCVAE(nn.Module):
-    """Compact class-conditioned VAE for 22-channel, 1000-sample EEG."""
+    """
+    Class-conditioned VAE for EEG shaped
+    (trials, 22 channels, 1000 time samples).
+
+    The class label is supplied to both the encoder and decoder.
+    """
 
     def __init__(
         self,
-        num_channels: int = 22,
-        num_timesteps: int = 1000,
-        num_classes: int = 4,
-        latent_dim: int = 32,
-        label_dim: int = 8,
-    ) -> None:
+        num_channels=22,
+        num_timesteps=1000,
+        num_classes=4,
+        latent_dim=32,
+        label_dim=8,
+    ):
         super().__init__()
 
-        if num_channels != 22 or num_timesteps != 1000:
+        if (
+            num_channels != 22
+            or num_timesteps != 1000
+        ):
             raise ValueError(
-                "This compact architecture expects EEG shaped (N, 22, 1000), "
-                f"but received channels={num_channels}, timesteps={num_timesteps}."
+                "This architecture expects EEG shaped "
+                "(N, 22, 1000), but received "
+                f"channels={num_channels}, "
+                f"timesteps={num_timesteps}"
             )
 
         self.num_channels = num_channels
@@ -62,7 +84,10 @@ class SharedCVAE(nn.Module):
             nn.Conv2d(
                 16,
                 32,
-                kernel_size=(num_channels, 1),
+                kernel_size=(
+                    num_channels,
+                    1,
+                ),
                 bias=False,
             ),
             nn.BatchNorm2d(32),
@@ -87,15 +112,38 @@ class SharedCVAE(nn.Module):
             nn.ELU(),
         )
 
-        self.encoded_shape = (64, 1, 20)
-        encoded_size = int(np.prod(self.encoded_shape))
+        self.encoded_shape = (
+            64,
+            1,
+            20,
+        )
+        encoded_size = int(
+            np.prod(
+                self.encoded_shape
+            )
+        )
 
-        self.encoder_label = nn.Embedding(num_classes, label_dim)
-        self.decoder_label = nn.Embedding(num_classes, label_dim)
+        self.encoder_label = nn.Embedding(
+            num_classes,
+            label_dim,
+        )
+        self.decoder_label = nn.Embedding(
+            num_classes,
+            label_dim,
+        )
 
-        self.fc_mu = nn.Linear(encoded_size + label_dim, latent_dim)
-        self.fc_logvar = nn.Linear(encoded_size + label_dim, latent_dim)
-        self.fc_decode = nn.Linear(latent_dim + label_dim, encoded_size)
+        self.fc_mu = nn.Linear(
+            encoded_size + label_dim,
+            latent_dim,
+        )
+        self.fc_logvar = nn.Linear(
+            encoded_size + label_dim,
+            latent_dim,
+        )
+        self.fc_decode = nn.Linear(
+            latent_dim + label_dim,
+            encoded_size,
+        )
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(
@@ -119,7 +167,10 @@ class SharedCVAE(nn.Module):
             nn.ConvTranspose2d(
                 32,
                 16,
-                kernel_size=(num_channels, 1),
+                kernel_size=(
+                    num_channels,
+                    1,
+                ),
                 bias=False,
             ),
             nn.BatchNorm2d(16),
@@ -135,425 +186,819 @@ class SharedCVAE(nn.Module):
 
     def encode(
         self,
-        x: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.encoder(x.unsqueeze(1)).flatten(start_dim=1)
-        condition = self.encoder_label(labels)
-        conditioned = torch.cat((features, condition), dim=1)
-        return self.fc_mu(conditioned), self.fc_logvar(conditioned)
+        X,
+        labels,
+    ):
+        features = self.encoder(
+            X.unsqueeze(1)
+        ).flatten(
+            start_dim=1
+        )
+
+        condition = self.encoder_label(
+            labels
+        )
+
+        conditioned_features = torch.cat(
+            (
+                features,
+                condition,
+            ),
+            dim=1,
+        )
+
+        return (
+            self.fc_mu(
+                conditioned_features
+            ),
+            self.fc_logvar(
+                conditioned_features
+            ),
+        )
 
     @staticmethod
     def reparameterize(
-        mu: torch.Tensor,
-        logvar: torch.Tensor,
-    ) -> torch.Tensor:
-        std = torch.exp(0.5 * logvar)
-        return mu + torch.randn_like(std) * std
+        mu,
+        log_variance,
+    ):
+        standard_deviation = torch.exp(
+            0.5 * log_variance
+        )
+
+        noise = torch.randn_like(
+            standard_deviation
+        )
+
+        return (
+            mu
+            + noise
+            * standard_deviation
+        )
 
     def decode(
         self,
-        z: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> torch.Tensor:
-        condition = self.decoder_label(labels)
-        conditioned = torch.cat((z, condition), dim=1)
-        features = self.fc_decode(conditioned)
-        features = features.view(-1, *self.encoded_shape)
-        return self.decoder(features).squeeze(1)
+        latent,
+        labels,
+    ):
+        condition = self.decoder_label(
+            labels
+        )
+
+        conditioned_latent = torch.cat(
+            (
+                latent,
+                condition,
+            ),
+            dim=1,
+        )
+
+        features = self.fc_decode(
+            conditioned_latent
+        )
+
+        features = features.view(
+            -1,
+            *self.encoded_shape,
+        )
+
+        return self.decoder(
+            features
+        ).squeeze(1)
 
     def forward(
         self,
-        x: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        mu, logvar = self.encode(x, labels)
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z, labels), mu, logvar
+        X,
+        labels,
+    ):
+        mu, log_variance = self.encode(
+            X,
+            labels,
+        )
+
+        latent = self.reparameterize(
+            mu,
+            log_variance,
+        )
+
+        reconstruction = self.decode(
+            latent,
+            labels,
+        )
+
+        return (
+            reconstruction,
+            mu,
+            log_variance,
+        )
 
 
 def compute_loss(
-    reconstructed: torch.Tensor,
-    original: torch.Tensor,
-    mu: torch.Tensor,
-    logvar: torch.Tensor,
-    beta: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    reconstruction_loss = F.mse_loss(reconstructed, original)
+    reconstruction,
+    original,
+    mu,
+    log_variance,
+    beta,
+):
+    reconstruction_loss = F.mse_loss(
+        reconstruction,
+        original,
+    )
+
     kl_loss = -0.5 * torch.mean(
         torch.sum(
-            1.0 + logvar - mu.square() - logvar.exp(),
+            (
+                1.0
+                + log_variance
+                - mu.square()
+                - log_variance.exp()
+            ),
             dim=1,
         )
     )
-    total_loss = reconstruction_loss + beta * kl_loss
-    return total_loss, reconstruction_loss, kl_loss
+
+    total_loss = (
+        reconstruction_loss
+        + beta * kl_loss
+    )
+
+    return (
+        total_loss,
+        reconstruction_loss,
+        kl_loss,
+    )
 
 
 def run_epoch(
-    model: SharedCVAE,
-    loader: DataLoader,
-    device: torch.device,
-    beta: float,
-    optimizer: torch.optim.Optimizer | None,
-) -> tuple[float, float, float]:
+    model,
+    loader,
+    device,
+    beta,
+    optimizer,
+):
     training = optimizer is not None
     model.train(training)
 
-    totals = np.zeros(3, dtype=np.float64)
+    totals = np.zeros(
+        3,
+        dtype=np.float64,
+    )
     sample_count = 0
 
-    for x, labels in loader:
-        x = x.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+    for X_batch, y_batch in loader:
+        X_batch = X_batch.to(
+            device,
+            non_blocking=True,
+        )
+        y_batch = y_batch.to(
+            device,
+            non_blocking=True,
+        )
 
         if training:
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(
+                set_to_none=True
+            )
 
-        with torch.set_grad_enabled(training):
-            reconstructed, mu, logvar = model(x, labels)
-            total_loss, reconstruction_loss, kl_loss = compute_loss(
-                reconstructed,
-                x,
+        with torch.set_grad_enabled(
+            training
+        ):
+            (
+                reconstruction,
                 mu,
-                logvar,
+                log_variance,
+            ) = model(
+                X_batch,
+                y_batch,
+            )
+
+            (
+                total_loss,
+                reconstruction_loss,
+                kl_loss,
+            ) = compute_loss(
+                reconstruction,
+                X_batch,
+                mu,
+                log_variance,
                 beta,
             )
 
             if training:
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_norm=5.0,
+                )
+
                 optimizer.step()
 
-        batch_size = x.shape[0]
-        totals += batch_size * np.array(
-            [
-                total_loss.detach().item(),
-                reconstruction_loss.detach().item(),
-                kl_loss.detach().item(),
-            ]
+        batch_size = X_batch.shape[0]
+
+        totals += (
+            batch_size
+            * np.asarray(
+                [
+                    total_loss
+                    .detach()
+                    .item(),
+                    reconstruction_loss
+                    .detach()
+                    .item(),
+                    kl_loss
+                    .detach()
+                    .item(),
+                ],
+                dtype=np.float64,
+            )
         )
+
         sample_count += batch_size
 
-    return tuple((totals / sample_count).tolist())
+    return tuple(
+        (
+            totals
+            / sample_count
+        ).tolist()
+    )
 
 
-def generate_dataset(
-    model: SharedCVAE,
-    labels: np.ndarray,
-    latent_dim: int,
-    batch_size: int,
-    device: torch.device,
-) -> np.ndarray:
+def generate_from_prior(
+    model,
+    labels,
+    latent_dim,
+    batch_size,
+    device,
+):
+    """
+    Generate new EEG from standard-normal latent samples.
+
+    This is not reconstruction: no real EEG trial is passed
+    through the encoder during generation.
+    """
+
     model.eval()
-    generated_batches: list[np.ndarray] = []
+    generated_batches = []
 
     with torch.no_grad():
-        for start in range(0, len(labels), batch_size):
+        for start in range(
+            0,
+            len(labels),
+            batch_size,
+        ):
             label_batch = torch.as_tensor(
-                labels[start : start + batch_size],
+                labels[
+                    start:
+                    start + batch_size
+                ],
                 dtype=torch.long,
                 device=device,
             )
-            z = torch.randn(
+
+            latent = torch.randn(
                 len(label_batch),
                 latent_dim,
                 device=device,
             )
-            generated = model.decode(z, label_batch)
-            generated_batches.append(
-                generated.detach().cpu().numpy().astype(np.float32)
+
+            generated = model.decode(
+                latent,
+                label_batch,
             )
 
-    return np.concatenate(generated_batches, axis=0)
+            generated_batches.append(
+                generated
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
+
+    return np.concatenate(
+        generated_batches,
+        axis=0,
+    )
+
+
+def output_file(
+    subject_id,
+    generator_seed,
+    config,
+):
+    return (
+        config.conditional_vae_directory
+        / (
+            f"S{subject_id:02d}_"
+            f"generator-seed{generator_seed}.npz"
+        )
+    )
+
+
+def model_directory(
+    subject_id,
+    generator_seed,
+    config,
+):
+    return (
+        config.checkpoint_directory
+        / "conditional_vae"
+        / (
+            f"S{subject_id:02d}_"
+            f"generator-seed{generator_seed}"
+        )
+    )
 
 
 def train_subject(
-    args: argparse.Namespace,
-    subject: int,
-    seed: int,
-    device: torch.device,
-) -> None:
-    output_directory = Path(args.output_dir)
-    output_directory.mkdir(parents=True, exist_ok=True)
-    model_directory = output_directory / "models"
-    model_directory.mkdir(parents=True, exist_ok=True)
-
-    output_path = (
-        output_directory
-        / f"S{subject:02d}_seed{seed}_vae_recon.npz"
+    subject_id,
+    generator_seed,
+    epochs,
+    batch_size,
+    latent_dim,
+    label_dim,
+    learning_rate,
+    weight_decay,
+    beta,
+    kl_warmup_epochs,
+    use_cuda,
+    overwrite,
+    config,
+):
+    generated_file = output_file(
+        subject_id,
+        generator_seed,
+        config,
     )
-    checkpoint_path = (
-        model_directory
-        / f"S{subject:02d}_seed{seed}_cvae_best.pt"
+
+    checkpoint_directory = model_directory(
+        subject_id,
+        generator_seed,
+        config,
     )
 
-    if output_path.exists() and not args.overwrite:
-        print(f"SKIP existing output: {output_path}", flush=True)
+    checkpoint_file = (
+        checkpoint_directory
+        / "cvae_best.pt"
+    )
+
+    if generated_file.exists() and not overwrite:
+        print(
+            f"SKIP existing generated EEG: "
+            f"{generated_file}",
+            flush=True,
+        )
         return
 
-    set_seed(seed + subject * 10_000)
+    if overwrite:
+        generated_file.unlink(
+            missing_ok=True
+        )
 
-    split_path = (
-        Path(args.split_dir)
-        / f"S{subject:02d}_real_splits.npz"
+        if checkpoint_directory.exists():
+            shutil.rmtree(
+                checkpoint_directory
+            )
+
+    checkpoint_directory.mkdir(
+        parents=True,
+        exist_ok=True,
     )
-    if not split_path.exists():
-        raise FileNotFoundError(f"Missing real split: {split_path}")
 
-    with np.load(split_path) as split:
-        x_train = np.asarray(split["X_train"], dtype=np.float32)
-        y_train = np.asarray(split["y_train"], dtype=np.int64)
-        x_valid = np.asarray(split["X_valid"], dtype=np.float32)
-        y_valid = np.asarray(split["y_valid"], dtype=np.int64)
+    generated_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    if x_train.ndim != 3:
-        raise ValueError(
-            f"Expected training shape (N, C, T), received {x_train.shape}."
+    set_seed(
+        generator_seed
+    )
+
+    split = load_real_split(
+        subject_id,
+        config,
+    )
+
+    X_train = np.asarray(
+        split.X_train,
+        dtype=np.float32,
+    )
+    y_train = np.asarray(
+        split.y_train,
+        dtype=np.int64,
+    )
+    X_valid = np.asarray(
+        split.X_valid,
+        dtype=np.float32,
+    )
+    y_valid = np.asarray(
+        split.y_valid,
+        dtype=np.int64,
+    )
+
+    if set(np.unique(y_train)) != set(
+        config.class_ids
+    ):
+        raise RuntimeError(
+            "CVAE training split does not contain "
+            "all four motor-imagery classes"
         )
-    if x_valid.shape[1:] != x_train.shape[1:]:
-        raise ValueError(
-            f"Training/validation shape mismatch: "
-            f"{x_train.shape} versus {x_valid.shape}."
-        )
-    if not np.isfinite(x_train).all() or not np.isfinite(x_valid).all():
-        raise ValueError("Training or validation EEG contains NaN/Inf values.")
 
-    classes = np.unique(y_train)
-    expected_classes = np.arange(args.num_classes)
-    if not np.array_equal(classes, expected_classes):
-        raise ValueError(
-            f"Expected labels {expected_classes.tolist()}, "
-            f"received {classes.tolist()}."
-        )
+    device = torch.device(
+        "cuda"
+        if use_cuda and torch.cuda.is_available()
+        else "cpu"
+    )
 
-    pin_memory = device.type == "cuda"
+    pin_memory = (
+        device.type == "cuda"
+    )
+
     train_loader = DataLoader(
         TensorDataset(
-            torch.from_numpy(x_train),
-            torch.from_numpy(y_train),
+            torch.from_numpy(
+                X_train
+            ),
+            torch.from_numpy(
+                y_train
+            ),
         ),
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=0,
         pin_memory=pin_memory,
     )
+
     valid_loader = DataLoader(
         TensorDataset(
-            torch.from_numpy(x_valid),
-            torch.from_numpy(y_valid),
+            torch.from_numpy(
+                X_valid
+            ),
+            torch.from_numpy(
+                y_valid
+            ),
         ),
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=pin_memory,
     )
 
     model = SharedCVAE(
-        num_channels=x_train.shape[1],
-        num_timesteps=x_train.shape[2],
-        num_classes=args.num_classes,
-        latent_dim=args.latent_dim,
-        label_dim=args.label_dim,
+        num_channels=(
+            X_train.shape[1]
+        ),
+        num_timesteps=(
+            X_train.shape[2]
+        ),
+        num_classes=len(
+            config.class_ids
+        ),
+        latent_dim=latent_dim,
+        label_dim=label_dim,
     ).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
+        lr=learning_rate,
+        weight_decay=weight_decay,
     )
 
     parameter_count = sum(
-        parameter.numel() for parameter in model.parameters()
+        parameter.numel()
+        for parameter
+        in model.parameters()
     )
-    class_counts = {
-        int(class_id): int(np.sum(y_train == class_id))
-        for class_id in classes
-    }
 
     print("=" * 72, flush=True)
     print(
-        f"START subject={subject}, seed={seed}, device={device}",
+        f"START conditional VAE | "
+        f"subject={subject_id} | "
+        f"generator_seed={generator_seed} | "
+        f"device={device}",
         flush=True,
     )
     print(
-        f"Train={x_train.shape}, valid={x_valid.shape}, "
-        f"class_counts={class_counts}",
+        f"Central split: {split.split_file}",
         flush=True,
     )
     print(
-        f"Parameters={parameter_count:,}, latent_dim={args.latent_dim}",
+        f"Train={X_train.shape}, "
+        f"valid={X_valid.shape}",
+        flush=True,
+    )
+    print(
+        f"Parameters={parameter_count:,}, "
+        f"latent_dim={latent_dim}",
         flush=True,
     )
 
-    best_validation_loss = float("inf")
+    best_validation_loss = float(
+        "inf"
+    )
     best_epoch = -1
 
-    for epoch in range(1, args.epochs + 1):
-        beta = args.beta * min(
-            1.0,
-            epoch / max(1, args.kl_warmup_epochs),
+    for epoch in range(
+        1,
+        epochs + 1,
+    ):
+        current_beta = (
+            beta
+            * min(
+                1.0,
+                epoch
+                / max(
+                    1,
+                    kl_warmup_epochs,
+                ),
+            )
         )
 
         train_metrics = run_epoch(
-            model,
-            train_loader,
-            device,
-            beta,
-            optimizer,
+            model=model,
+            loader=train_loader,
+            device=device,
+            beta=current_beta,
+            optimizer=optimizer,
         )
+
         validation_metrics = run_epoch(
-            model,
-            valid_loader,
-            device,
-            beta,
+            model=model,
+            loader=valid_loader,
+            device=device,
+            beta=current_beta,
             optimizer=None,
         )
 
         print(
-            f"Subject {subject:02d} | epoch {epoch:03d}/{args.epochs} | "
-            f"beta={beta:.5f} | "
+            f"Subject {subject_id:02d} | "
+            f"epoch {epoch:03d}/{epochs} | "
+            f"beta={current_beta:.5f} | "
             f"train total={train_metrics[0]:.5f}, "
-            f"mse={train_metrics[1]:.5f}, kl={train_metrics[2]:.5f} | "
+            f"mse={train_metrics[1]:.5f}, "
+            f"kl={train_metrics[2]:.5f} | "
             f"valid total={validation_metrics[0]:.5f}, "
             f"mse={validation_metrics[1]:.5f}, "
             f"kl={validation_metrics[2]:.5f}",
             flush=True,
         )
 
-        if validation_metrics[0] < best_validation_loss:
-            best_validation_loss = validation_metrics[0]
+        if (
+            validation_metrics[0]
+            < best_validation_loss
+        ):
+            best_validation_loss = (
+                validation_metrics[0]
+            )
             best_epoch = epoch
+
             torch.save(
                 {
-                    "model_state_dict": model.state_dict(),
-                    "subject": subject,
-                    "seed": seed,
+                    "model_state_dict": (
+                        model.state_dict()
+                    ),
+                    "protocol_id": (
+                        config.protocol_id
+                    ),
+                    "subject_id": (
+                        subject_id
+                    ),
+                    "generator_seed": (
+                        generator_seed
+                    ),
                     "epoch": epoch,
-                    "validation_loss": best_validation_loss,
-                    "latent_dim": args.latent_dim,
-                    "label_dim": args.label_dim,
-                    "num_classes": args.num_classes,
+                    "validation_loss": (
+                        best_validation_loss
+                    ),
+                    "latent_dim": (
+                        latent_dim
+                    ),
+                    "label_dim": (
+                        label_dim
+                    ),
+                    "num_classes": len(
+                        config.class_ids
+                    ),
+                    "split_file": str(
+                        split.split_file
+                    ),
                 },
-                checkpoint_path,
+                checkpoint_file,
             )
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    if not checkpoint_file.exists():
+        raise FileNotFoundError(
+            f"CVAE checkpoint was not created: "
+            f"{checkpoint_file}"
+        )
 
-    generation_labels = np.concatenate(
-        [
-            np.full(
-                np.sum(y_train == class_id),
-                class_id,
-                dtype=np.int64,
-            )
-            for class_id in classes
+    checkpoint = torch.load(
+        checkpoint_file,
+        map_location=device,
+        weights_only=False,
+    )
+
+    model.load_state_dict(
+        checkpoint[
+            "model_state_dict"
         ]
     )
 
-    set_seed(seed + subject * 10_000 + 1)
-    x_generated = generate_dataset(
-        model,
-        generation_labels,
-        args.latent_dim,
-        args.batch_size,
-        device,
+    # Retain the exact central training-label order so the
+    # classifier receives a directly comparable training set.
+    generation_labels = (
+        y_train.copy()
     )
 
-    if x_generated.shape != x_train.shape:
+    prior_seed = (
+        generator_seed + 1
+    )
+
+    set_seed(
+        prior_seed
+    )
+
+    X_generated = generate_from_prior(
+        model=model,
+        labels=generation_labels,
+        latent_dim=latent_dim,
+        batch_size=batch_size,
+        device=device,
+    )
+
+    if X_generated.shape != X_train.shape:
         raise RuntimeError(
-            f"Generated shape {x_generated.shape} does not match "
-            f"training shape {x_train.shape}."
+            f"Generated CVAE shape {X_generated.shape} "
+            f"does not match training shape {X_train.shape}"
         )
-    if not np.isfinite(x_generated).all():
-        raise RuntimeError("Generated EEG contains NaN/Inf values.")
+
+    if not np.isfinite(
+        X_generated
+    ).all():
+        raise RuntimeError(
+            "Generated CVAE EEG contains NaN or infinity"
+        )
 
     np.savez_compressed(
-        output_path,
-        X_recon=x_generated,
-        X_generated=x_generated,
+        generated_file,
+        X=X_generated,
         y=generation_labels,
-        subject=np.asarray(subject),
-        seed=np.asarray(seed),
-        best_epoch=np.asarray(best_epoch),
-        best_validation_loss=np.asarray(best_validation_loss),
-        source=np.asarray("shared_true_cvae_prior_generation"),
-        conditioning=np.asarray(
-            "class_label_in_encoder_and_decoder"
+        protocol_id=config.protocol_id,
+        method=(
+            "conditional_vae_generation"
+        ),
+        subject_id=subject_id,
+        generator_seed=generator_seed,
+        prior_seed=prior_seed,
+        split_file=str(
+            split.split_file
+        ),
+        best_epoch=best_epoch,
+        best_validation_loss=(
+            best_validation_loss
+        ),
+        conditioning=(
+            "class label supplied to encoder and decoder"
+        ),
+        source=(
+            "new EEG generated from standard-normal "
+            "latent prior; not reconstruction"
         ),
     )
 
-    generated_counts = {
-        int(class_id): int(np.sum(generation_labels == class_id))
-        for class_id in classes
-    }
-
     print(
-        f"DONE subject={subject}, seed={seed}, best_epoch={best_epoch}, "
-        f"best_valid={best_validation_loss:.5f}",
+        f"SAVED {generated_file}",
         flush=True,
     )
-    print(f"Saved: {output_path}", flush=True)
     print(
-        f"Generated={x_generated.shape}, labels={generated_counts}, "
-        f"mean={x_generated.mean():.5f}, "
-        f"std={x_generated.std():.5f}, "
-        f"min={x_generated.min():.5f}, "
-        f"max={x_generated.max():.5f}",
+        f"Best epoch={best_epoch}, "
+        f"best validation loss="
+        f"{best_validation_loss:.6f}",
+        flush=True,
+    )
+    print(
+        f"Generated shape={X_generated.shape}, "
+        f"mean={X_generated.mean():.6f}, "
+        f"std={X_generated.std():.6f}",
         flush=True,
     )
 
+    del model
+    del optimizer
+    del train_loader
+    del valid_loader
 
-def main() -> None:
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Train one shared class-conditioned VAE per subject and "
-            "generate labelled EEG from the standard-normal prior."
+            "Train a subject-specific class-conditioned VAE "
+            "from the central split and generate new labelled "
+            "EEG from its latent prior."
         )
     )
-    parser.add_argument(
-        "--split-dir",
-        default="outputs/vae_runs/run1/classifier_real_splits",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="outputs/generated/shared_cvae",
-    )
+
     parser.add_argument(
         "--subjects",
-        default="1,2,3,4,5,6,7,8,9",
+        default=",".join(
+            str(subject)
+            for subject
+            in CONFIG.subject_numbers
+        ),
     )
-    parser.add_argument("--seeds", default="0")
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--latent-dim", type=int, default=32)
-    parser.add_argument("--label-dim", type=int, default=8)
-    parser.add_argument("--num-classes", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--beta", type=float, default=1e-2)
-    parser.add_argument("--kl-warmup-epochs", type=int, default=10)
-    parser.add_argument("--cuda", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--generator-seeds",
+        default=",".join(
+            str(seed)
+            for seed
+            in CONFIG.generator_seeds
+        ),
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=50,
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+    )
+    parser.add_argument(
+        "--latent-dim",
+        type=int,
+        default=32,
+    )
+    parser.add_argument(
+        "--label-dim",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=1e-3,
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=1e-4,
+    )
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=1e-2,
+    )
+    parser.add_argument(
+        "--kl-warmup-epochs",
+        type=int,
+        default=10,
+    )
+    parser.add_argument(
+        "--cuda",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+    )
+
     args = parser.parse_args()
 
-    if args.cuda and not torch.cuda.is_available():
-        raise RuntimeError("--cuda was requested, but CUDA is unavailable.")
-
-    device = torch.device(
-        "cuda" if args.cuda else "cpu"
+    subjects = parse_int_list(
+        args.subjects
+    )
+    generator_seeds = parse_int_list(
+        args.generator_seeds
     )
 
-    print(
-        f"Shared CVAE run | subjects={args.subjects} | "
-        f"seeds={args.seeds} | epochs={args.epochs} | device={device}",
-        flush=True,
-    )
-
-    for subject in parse_int_list(args.subjects):
-        for seed in parse_int_list(args.seeds):
-            train_subject(args, subject, seed, device)
+    for subject_id in subjects:
+        for generator_seed in generator_seeds:
+            train_subject(
+                subject_id=subject_id,
+                generator_seed=generator_seed,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                latent_dim=args.latent_dim,
+                label_dim=args.label_dim,
+                learning_rate=(
+                    args.learning_rate
+                ),
+                weight_decay=(
+                    args.weight_decay
+                ),
+                beta=args.beta,
+                kl_warmup_epochs=(
+                    args.kl_warmup_epochs
+                ),
+                use_cuda=args.cuda,
+                overwrite=args.overwrite,
+                config=CONFIG,
+            )
 
 
 if __name__ == "__main__":

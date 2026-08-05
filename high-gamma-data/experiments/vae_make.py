@@ -1,15 +1,25 @@
 import argparse
+import gc
+import os
 import random
-import subprocess
+import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader, TensorDataset
+
+from pipeline.config import CONFIG
+from pipeline.splits import load_real_split
 
 
 def parse_int_list(value):
-    return [int(x.strip()) for x in value.split(",") if x.strip()]
+    return [
+        int(item.strip())
+        for item in value.split(",")
+        if item.strip()
+    ]
 
 
 def set_seed(seed):
@@ -24,415 +34,655 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def add_vae_repo_to_path(repo_path):
-    repo_path = Path(repo_path).resolve()
+def configure_numba_cuda(config):
+    """
+    Point Numba to the local minimal CUDA toolkit used by
+    the external soft-DTW implementation.
+    """
 
-    if not repo_path.exists():
-        raise FileNotFoundError(f"VAE repo folder not found: {repo_path}")
+    cuda_home = (
+        config.project_root
+        / ".cuda-numba"
+    ).resolve()
 
-    sys.path.insert(0, str(repo_path))
+    nvvm_file = (
+        cuda_home
+        / "nvvm"
+        / "lib64"
+        / "libnvvm.so"
+    )
+    libdevice_directory = (
+        cuda_home
+        / "nvvm"
+        / "libdevice"
+    )
+    libdevice_files = sorted(
+        libdevice_directory.glob(
+            "libdevice*.bc"
+        )
+    )
+
+    if not nvvm_file.is_file():
+        raise FileNotFoundError(
+            f"Missing local NVVM library: {nvvm_file}"
+        )
+
+    if not libdevice_files:
+        raise FileNotFoundError(
+            "No libdevice bitcode file was found in "
+            f"{libdevice_directory}"
+        )
+
+    # Numba 0.66 discovers both NVVM and libdevice relative
+    # to CUDA_HOME.
+    os.environ["CUDA_HOME"] = str(
+        cuda_home
+    )
+
+    library_directories = [
+        cuda_home / "lib",
+        cuda_home / "lib64",
+        cuda_home / "nvvm" / "lib64",
+    ]
+
+    existing_library_path = (
+        os.environ.get(
+            "LD_LIBRARY_PATH",
+            "",
+        )
+    )
+
+    path_entries = [
+        str(directory)
+        for directory in library_directories
+        if directory.exists()
+    ]
+
+    if existing_library_path:
+        path_entries.append(
+            existing_library_path
+        )
+
+    os.environ["LD_LIBRARY_PATH"] = ":".join(
+        path_entries
+    )
+
+    # Remove obsolete values so there is only one explicit
+    # CUDA-discovery mechanism.
+    os.environ.pop(
+        "NUMBAPRO_NVVM",
+        None,
+    )
+    os.environ.pop(
+        "NUMBAPRO_LIBDEVICE",
+        None,
+    )
+
+    from numba.cuda.cuda_paths import get_cuda_paths
+
+    # Avoid retaining a lookup performed before CUDA_HOME was set.
+    if hasattr(
+        get_cuda_paths,
+        "_cached_result",
+    ):
+        delattr(
+            get_cuda_paths,
+            "_cached_result",
+        )
+
+    discovered = get_cuda_paths()
+
+    discovered_nvvm = (
+        discovered["nvvm"].info
+    )
+    discovered_libdevice = (
+        discovered["libdevice"].info
+    )
+
+    if discovered_nvvm is None:
+        raise RuntimeError(
+            "Numba could not discover libnvvm.so "
+            f"under CUDA_HOME={cuda_home}"
+        )
+
+    if discovered_libdevice is None:
+        raise RuntimeError(
+            "Numba could not discover a libdevice "
+            f"file under CUDA_HOME={cuda_home}"
+        )
+
+    print(
+        f"CUDA_HOME: {cuda_home}",
+        flush=True,
+    )
+    print(
+        f"Numba NVVM: {discovered_nvvm}",
+        flush=True,
+    )
+    print(
+        f"Numba libdevice: {discovered_libdevice}",
+        flush=True,
+    )
 
 
-def reconstruct_dataset(model, dataset, batch_size, device):
-    loader = torch.utils.data.DataLoader(
+def add_vae_repository_to_path(repository):
+    repository = Path(repository).resolve()
+
+    if not repository.exists():
+        raise FileNotFoundError(
+            f"External VAE repository not found: {repository}"
+        )
+
+    sys.path.insert(0, str(repository))
+
+
+def make_tensor_dataset(X, y):
+    """
+    Convert central EEG shaped (trials, channels, time) into the
+    singleton-dimension format expected by the external VAE.
+    """
+
+    X_tensor = torch.from_numpy(
+        np.asarray(X, dtype=np.float32)
+    ).unsqueeze(1)
+
+    y_tensor = torch.from_numpy(
+        np.asarray(y, dtype=np.int64)
+    )
+
+    return TensorDataset(
+        X_tensor,
+        y_tensor,
+    )
+
+
+def reconstruct_dataset(
+    model,
+    dataset,
+    batch_size,
+    device,
+):
+    loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
+        num_workers=0,
     )
 
-    all_recon = []
-    all_labels = []
+    reconstruction_batches = []
+    label_batches = []
 
     model.eval()
 
     with torch.no_grad():
-        for x_batch, y_batch in loader:
-            x_batch = x_batch.to(device)
+        for X_batch, y_batch in loader:
+            X_batch = X_batch.to(device)
 
-            # hvEEGNet has a reconstruct method.
-            x_recon = model.reconstruct(x_batch, no_grad=True)
-
-            all_recon.append(x_recon.detach().cpu().numpy())
-            all_labels.append(y_batch.detach().cpu().numpy())
-
-    X_recon_raw = np.concatenate(all_recon, axis=0)
-    y = np.concatenate(all_labels, axis=0)
-
-    # Expected native shape is usually:
-    # trials x 1 x channels x time
-    if X_recon_raw.ndim == 4 and X_recon_raw.shape[1] == 1:
-        X_recon = X_recon_raw[:, 0, :, :]
-    elif X_recon_raw.ndim == 3:
-        X_recon = X_recon_raw
-    else:
-        X_recon = np.squeeze(X_recon_raw)
-
-        if X_recon.ndim != 3:
-            raise ValueError(
-                f"Could not convert reconstructed EEG to 3D. "
-                f"Original shape was {X_recon_raw.shape}, squeezed shape is {X_recon.shape}"
+            X_reconstructed = model.reconstruct(
+                X_batch,
+                no_grad=True,
             )
 
-    return X_recon.astype(np.float32), y.astype(np.int64), X_recon_raw.shape
+            reconstruction_batches.append(
+                X_reconstructed
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            label_batches.append(
+                y_batch
+                .detach()
+                .cpu()
+                .numpy()
+            )
+
+    X_raw = np.concatenate(
+        reconstruction_batches,
+        axis=0,
+    )
+    y = np.concatenate(
+        label_batches,
+        axis=0,
+    )
+
+    if X_raw.ndim == 4 and X_raw.shape[1] == 1:
+        X_reconstructed = X_raw[:, 0, :, :]
+
+    elif X_raw.ndim == 3:
+        X_reconstructed = X_raw
+
+    else:
+        X_reconstructed = np.squeeze(
+            X_raw
+        )
+
+        if X_reconstructed.ndim != 3:
+            raise RuntimeError(
+                "Could not convert VAE reconstruction "
+                f"shape {X_raw.shape} into three dimensions"
+            )
+
+    return (
+        X_reconstructed.astype(np.float32),
+        y.astype(np.int64),
+        X_raw.shape,
+    )
 
 
-def train_and_save_one_subject(args, subject_id, seed):
-    set_seed(seed)
-    add_vae_repo_to_path(args.repo)
+def reconstruction_file(
+    subject_id,
+    generator_seed,
+    config,
+):
+    return (
+        config.vae_reconstruction_directory
+        / (
+            f"S{subject_id:02d}_"
+            f"generator-seed{generator_seed}.npz"
+        )
+    )
 
-    from library.dataset import preprocess as pp
-    from library.config import config_dataset as cd
-    from library.config import config_training as ct
+
+def checkpoint_directory(
+    subject_id,
+    generator_seed,
+    config,
+):
+    return (
+        config.checkpoint_directory
+        / "vae_reconstruction"
+        / (
+            f"S{subject_id:02d}_"
+            f"generator-seed{generator_seed}"
+        )
+    )
+
+
+def train_subject(
+    subject_id,
+    generator_seed,
+    epochs,
+    batch_size,
+    use_cuda,
+    overwrite,
+    config,
+):
+    output_file = reconstruction_file(
+        subject_id,
+        generator_seed,
+        config,
+    )
+
+    model_directory = checkpoint_directory(
+        subject_id,
+        generator_seed,
+        config,
+    )
+
+    if output_file.exists() and not overwrite:
+        print(
+            f"SKIP existing reconstruction: {output_file}",
+            flush=True,
+        )
+        return
+
+    if overwrite:
+        output_file.unlink(
+            missing_ok=True
+        )
+
+        if model_directory.exists():
+            shutil.rmtree(
+                model_directory
+            )
+
+    set_seed(
+        generator_seed
+    )
+
     from library.config import config_model as cm
+    from library.config import config_training as ct
     from library.training import train_generic
 
-    print(f"START VAE subject={subject_id} seed={seed}", flush=True)
+    split = load_real_split(
+        subject_id,
+        config,
+    )
 
-    dataset_config = cd.get_moabb_dataset_config([subject_id])
+    train_dataset = make_tensor_dataset(
+        split.X_train,
+        split.y_train,
+    )
+    valid_dataset = make_tensor_dataset(
+        split.X_valid,
+        split.y_valid,
+    )
 
-    train_config = ct.get_config_vEEGNet_training()
-    train_config["epochs"] = args.epochs
-    train_config["batch_size"] = args.batch_size
+    device = (
+        "cuda"
+        if use_cuda and torch.cuda.is_available()
+        else "cpu"
+    )
+
+    train_config = (
+        ct.get_config_vEEGNet_training()
+    )
+
+    train_config["epochs"] = epochs
+    train_config["batch_size"] = batch_size
     train_config["wandb_training"] = False
     train_config["print_var"] = True
-    train_config["device"] = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
+    train_config["device"] = device
     train_config["path_to_save_model"] = str(
-        Path(args.out_dir) / "models" / f"S{subject_id:02d}_seed{seed}"
+        model_directory
     )
-    train_config["model_artifact_name"] = f"vae_S{subject_id:02d}_seed{seed}"
-    train_config["notes"] = "local VAE reconstruction for downstream classifier"
-
-    C = 22
-
-    if dataset_config["resample_data"]:
-        sampling_freq = dataset_config["resample_freq"]
-    else:
-        sampling_freq = 250
-
-    T = int((dataset_config["trial_end"] - dataset_config["trial_start"]) * sampling_freq)
-
-    type_decoder = 0
-    parameters_map_type = 0
-
-    model_config = cm.get_config_hierarchical_vEEGNet(
-        C,
-        T,
-        type_decoder,
-        parameters_map_type,
+    train_config["model_artifact_name"] = (
+        f"vae_reconstruction_"
+        f"S{subject_id:02d}_"
+        f"generator-seed{generator_seed}"
+    )
+    train_config["notes"] = (
+        "Hierarchical VAE trained from the central "
+        "90/10 real EEG split"
     )
 
-    train_config["measure_metrics_during_training"] = model_config["use_classifier"]
-    train_config["use_classifier"] = model_config["use_classifier"]
-
-    print("Loading Dataset 2a through VAE repo pipeline...", flush=True)
-
-    # Leakage-safe fixed split settings.
-    # These make the data split fixed across model seeds.
-    # Model seeds may change VAE initialisation/training randomness,
-    # but not which trials are train/validation.
-    dataset_config['percentage_split_train_test'] = -1
-    dataset_config['percentage_split_train_validation'] = 0.9
-    dataset_config['seed_split'] = 42
-
-    train_dataset, validation_dataset, test_dataset = pp.get_dataset_d2a(dataset_config)
-    # Save the exact split indices used by the VAE repo.
-    # This is needed so the downstream classifier can use:
-    #   train = VAE reconstructed training trials
-    #   validation = real validation trials
-    #   test = real official test/session trials
-    from library.dataset import support_function as vae_split_sf
-    import os
-    import numpy as _np
-
-    n_train_before_validation = len(train_dataset) + len(validation_dataset)
-    fixed_train_idx, fixed_validation_idx = vae_split_sf.get_idx_to_split_data(
-        n_train_before_validation,
-        dataset_config['percentage_split_train_validation'],
-        dataset_config['seed_split']
+    model_directory.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    split_dir = Path(args.out_dir) / "splits"
-    split_dir.mkdir(parents=True, exist_ok=True)
-    split_path = split_dir / f"S{subject_id:02d}_seed{seed}_fixed_split.npz"
+    n_channels = split.X_train.shape[1]
+    n_times = split.X_train.shape[2]
 
-    _np.savez(
-        split_path,
-        train_idx=fixed_train_idx,
-        validation_idx=fixed_validation_idx,
-        subject_id=subject_id,
-        seed=seed,
-        split_seed=dataset_config['seed_split'],
-        percentage_split_train_validation=dataset_config['percentage_split_train_validation'],
-        percentage_split_train_test=dataset_config['percentage_split_train_test'],
-        n_train_before_validation=n_train_before_validation,
-        n_vae_train=len(train_dataset),
-        n_vae_validation=len(validation_dataset),
-        n_test=len(test_dataset) if test_dataset is not None else -1,
-        note="VAE trained only on train_idx; validation_idx saved for downstream real validation; official test remains separate."
+    model_config = (
+        cm.get_config_hierarchical_vEEGNet(
+            n_channels,
+            n_times,
+            0,
+            0,
+        )
     )
-    print(f"Saved fixed split indices: {split_path}")
 
+    train_config[
+        "measure_metrics_during_training"
+    ] = model_config["use_classifier"]
 
-    if validation_dataset is None:
-        raise RuntimeError("Validation dataset is None. The VAE training code needs validation data.")
+    train_config["use_classifier"] = (
+        model_config["use_classifier"]
+    )
 
-    train_loader = torch.utils.data.DataLoader(
+    train_loader = DataLoader(
         train_dataset,
-        batch_size=train_config["batch_size"],
+        batch_size=batch_size,
         shuffle=True,
+        num_workers=0,
     )
 
-    validation_loader = torch.utils.data.DataLoader(
-        validation_dataset,
-        batch_size=train_config["batch_size"],
-        shuffle=True,
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
     )
 
-    model_config["input_size"] = train_dataset[0][0].unsqueeze(0).shape
+    model_config["input_size"] = (
+        train_dataset[0][0]
+        .unsqueeze(0)
+        .shape
+    )
 
     model = train_generic.get_untrained_model(
         "hvEEGNet_shallow",
         model_config,
     )
 
-    device = train_config["device"]
     model.to(device)
 
-    loss_function = train_generic.get_loss_function(
-        "hvEEGNet_shallow",
-        train_config,
+    loss_function = (
+        train_generic.get_loss_function(
+            "hvEEGNet_shallow",
+            train_config,
+        )
     )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=train_config["lr"],
-        weight_decay=train_config["optimizer_weight_decay"],
+        weight_decay=(
+            train_config[
+                "optimizer_weight_decay"
+            ]
+        ),
     )
 
     if train_config["use_scheduler"]:
-        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer,
-            gamma=train_config["lr_decay_rate"],
+        scheduler = (
+            torch.optim.lr_scheduler.ExponentialLR(
+                optimizer,
+                gamma=(
+                    train_config[
+                        "lr_decay_rate"
+                    ]
+                ),
+            )
         )
     else:
-        lr_scheduler = None
+        scheduler = None
 
-    Path(train_config["path_to_save_model"]).mkdir(parents=True, exist_ok=True)
-
-    print("Training VAE...", flush=True)
+    print("=" * 72, flush=True)
+    print(
+        f"START VAE reconstruction | "
+        f"subject={subject_id} | "
+        f"generator_seed={generator_seed} | "
+        f"device={device}",
+        flush=True,
+    )
+    print(
+        f"Central split: {split.split_file}",
+        flush=True,
+    )
+    print(
+        f"Train={split.X_train.shape}, "
+        f"valid={split.X_valid.shape}",
+        flush=True,
+    )
 
     train_generic.train(
         model,
         loss_function,
         optimizer,
-        [train_loader, validation_loader],
+        [
+            train_loader,
+            valid_loader,
+        ],
         train_config,
-        lr_scheduler,
+        scheduler,
         model_artifact=None,
     )
 
-    best_model_path = Path(train_config["path_to_save_model"]) / "model_BEST.pth"
+    best_model_file = (
+        model_directory
+        / "model_BEST.pth"
+    )
 
-    if best_model_path.exists():
-        state = torch.load(best_model_path, map_location=device)
-        model.load_state_dict(state)
-        print(f"Loaded best VAE model: {best_model_path}", flush=True)
-    else:
-        print("WARNING: model_BEST.pth not found. Using final model state.", flush=True)
+    if not best_model_file.exists():
+        raise FileNotFoundError(
+            "The external VAE trainer did not save its "
+            f"validation-selected model: {best_model_file}"
+        )
 
-    print("Reconstructing VAE training EEG...", flush=True)
+    state = torch.load(
+        best_model_file,
+        map_location=device,
+    )
 
-    X_recon, y, original_recon_shape = reconstruct_dataset(
+    model.load_state_dict(
+        state
+    )
+
+    print(
+        f"Loaded validation-selected model: "
+        f"{best_model_file}",
+        flush=True,
+    )
+
+    (
+        X_reconstructed,
+        y_reconstructed,
+        original_shape,
+    ) = reconstruct_dataset(
         model=model,
         dataset=train_dataset,
-        batch_size=train_config["batch_size"],
+        batch_size=batch_size,
         device=device,
     )
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    out_path = out_dir / f"S{subject_id:02d}_seed{seed}_vae_recon.npz"
-
-    np.savez_compressed(
-        out_path,
-        X_recon=X_recon,
-        y=y,
-        subject_id=subject_id,
-        seed=seed,
-        original_recon_shape=np.asarray(original_recon_shape),
-        final_shape=np.asarray(X_recon.shape),
-        source="hvEEGNet_paper_native_reconstruction",
-    )
-
-    print(f"DONE VAE subject={subject_id} seed={seed}", flush=True)
-    print(f"Saved: {out_path}", flush=True)
-    print(f"X_recon shape: {X_recon.shape}", flush=True)
-    print(f"y shape: {y.shape}", flush=True)
-    print(f"labels: {np.unique(y, return_counts=True)}", flush=True)
-
-
-def compare_run_splits(run1_dir, run2_dir, subjects, seeds):
-    """
-    Confirm that both reconstruction runs used exactly the same
-    train and validation trial indices.
-    """
-    run1_dir = Path(run1_dir)
-    run2_dir = Path(run2_dir)
-
-    checked = 0
-    missing = []
-
-    for subject_id in subjects:
-        for seed in seeds:
-            filename = f"S{subject_id:02d}_seed{seed}_fixed_split.npz"
-
-            run1_path = run1_dir / "splits" / filename
-            run2_path = run2_dir / "splits" / filename
-
-            if not run1_path.exists() or not run2_path.exists():
-                missing.append(filename)
-                continue
-
-            with np.load(run1_path) as run1_split, np.load(run2_path) as run2_split:
-                train_matches = np.array_equal(
-                    run1_split["train_idx"],
-                    run2_split["train_idx"],
-                )
-                validation_matches = np.array_equal(
-                    run1_split["validation_idx"],
-                    run2_split["validation_idx"],
-                )
-
-            if not train_matches or not validation_matches:
-                raise RuntimeError(
-                    f"Run-1 and run-2 splits do not match for {filename}"
-                )
-
-            checked += 1
-
-    print(
-        f"Verified identical run-1/run-2 splits for {checked} "
-        f"subject-seed combinations.",
-        flush=True,
-    )
-
-    if missing:
-        print(
-            "Split comparison skipped for missing files: "
-            + ", ".join(missing),
-            flush=True,
+    if X_reconstructed.shape != split.X_train.shape:
+        raise RuntimeError(
+            "VAE reconstruction shape "
+            f"{X_reconstructed.shape} does not match "
+            f"central training shape {split.X_train.shape}"
         )
 
+    if not np.array_equal(
+        y_reconstructed,
+        split.y_train,
+    ):
+        raise RuntimeError(
+            "VAE reconstruction labels do not exactly "
+            "match the central training labels"
+        )
 
-def run_in_fresh_process(args, experiment):
-    """
-    Run each repeated experiment in a fresh Python process so run 1
-    and run 2 begin from equivalent process states.
-    """
-    command = [
-        sys.executable,
-        "-u",
-        str(Path(__file__).resolve()),
-        "--experiment",
-        experiment,
-        "--repo",
-        args.repo,
-        "--run1-dir",
-        args.run1_dir,
-        "--run2-dir",
-        args.run2_dir,
-        "--subjects",
-        args.subjects,
-        "--seeds",
-        args.seeds,
-        "--epochs",
-        str(args.epochs),
-        "--batch-size",
-        str(args.batch_size),
-    ]
+    if not np.isfinite(
+        X_reconstructed
+    ).all():
+        raise RuntimeError(
+            "VAE reconstruction contains NaN or infinity"
+        )
 
-    if args.cuda:
-        command.append("--cuda")
-
-    print(
-        f"Launching {experiment} in a fresh Python process.",
-        flush=True,
+    output_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    subprocess.run(command, check=True)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("--repo", default="external/vae_repo")
-
-    parser.add_argument(
-        "--experiment",
-        choices=["run1", "run2", "both"],
-        default="run2",
-        help=(
-            "Choose which repeated VAE experiment to run. "
-            "'both' runs run1 first and then run2."
+    np.savez_compressed(
+        output_file,
+        X=X_reconstructed,
+        y=y_reconstructed,
+        protocol_id=config.protocol_id,
+        method="vae_reconstruction",
+        subject_id=subject_id,
+        generator_seed=generator_seed,
+        split_file=str(split.split_file),
+        original_reconstruction_shape=np.asarray(
+            original_shape
+        ),
+        source=(
+            "hierarchical VAE reconstruction of "
+            "central real training EEG"
         ),
     )
 
-    parser.add_argument("--run1-dir", default="outputs/vae_runs/run1")
-    parser.add_argument("--run2-dir", default="outputs/vae_runs/run2")
+    print(
+        f"SAVED {output_file}",
+        flush=True,
+    )
+    print(
+        f"Shape={X_reconstructed.shape}, "
+        f"mean={X_reconstructed.mean():.6f}, "
+        f"std={X_reconstructed.std():.6f}",
+        flush=True,
+    )
 
-    parser.add_argument("--subjects", default="1")
-    parser.add_argument("--seeds", default="0")
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=30)
-    parser.add_argument("--cuda", action="store_true")
+    del model
+    del optimizer
+    del train_loader
+    del valid_loader
+
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train the adopted hierarchical VAE from the "
+            "central EEG split and reconstruct only the "
+            "real training trials."
+        )
+    )
+
+    parser.add_argument(
+        "--repo",
+        default=str(
+            CONFIG.external_vae_repository
+        ),
+    )
+    parser.add_argument(
+        "--subjects",
+        default=",".join(
+            str(subject)
+            for subject
+            in CONFIG.subject_numbers
+        ),
+    )
+    parser.add_argument(
+        "--generator-seeds",
+        default=",".join(
+            str(seed)
+            for seed
+            in CONFIG.generator_seeds
+        ),
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=10,
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=30,
+    )
+    parser.add_argument(
+        "--cuda",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+    )
 
     args = parser.parse_args()
 
-    subjects = parse_int_list(args.subjects)
-    seeds = parse_int_list(args.seeds)
+    configure_numba_cuda(
+        CONFIG
+    )
 
-    if args.experiment == "both":
-        run_in_fresh_process(args, "run1")
-        run_in_fresh_process(args, "run2")
+    add_vae_repository_to_path(
+        args.repo
+    )
 
-        compare_run_splits(
-            args.run1_dir,
-            args.run2_dir,
-            subjects,
-            seeds,
-        )
-        return
-
-    if args.experiment == "run1":
-        args.out_dir = args.run1_dir
-    else:
-        args.out_dir = args.run2_dir
-
-    print("=" * 70, flush=True)
-    print(f"VAE experiment: {args.experiment}", flush=True)
-    print(f"Output directory: {args.out_dir}", flush=True)
-    print(f"Subjects: {subjects}", flush=True)
-    print(f"Seeds: {seeds}", flush=True)
-    print(f"Epochs: {args.epochs}", flush=True)
-    print(f"Batch size: {args.batch_size}", flush=True)
-    print("=" * 70, flush=True)
+    subjects = parse_int_list(
+        args.subjects
+    )
+    generator_seeds = parse_int_list(
+        args.generator_seeds
+    )
 
     for subject_id in subjects:
-        for seed in seeds:
-            train_and_save_one_subject(
-                args,
-                subject_id,
-                seed,
+        for generator_seed in generator_seeds:
+            train_subject(
+                subject_id=subject_id,
+                generator_seed=generator_seed,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                use_cuda=args.cuda,
+                overwrite=args.overwrite,
+                config=CONFIG,
             )
-
-    if args.experiment == "run2":
-        compare_run_splits(
-            args.run1_dir,
-            args.run2_dir,
-            subjects,
-            seeds,
-        )
 
 
 if __name__ == "__main__":
