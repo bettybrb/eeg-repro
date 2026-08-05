@@ -49,6 +49,21 @@ class ExperimentConfiguration:
         / "conditional_vae"
     )
 
+    class_specific_vae_directory: Path = (
+        PROJECT_ROOT
+        / "data"
+        / "generated"
+        / "vae_repo_90_10_seed42"
+        / "class_specific_vae"
+    )
+    hierarchical_conditional_vae_directory: Path = (
+        PROJECT_ROOT
+        / "data"
+        / "generated"
+        / "vae_repo_90_10_seed42"
+        / "hierarchical_conditional_vae"
+    )
+
     output_directory: Path = PROJECT_ROOT / "outputs"
     checkpoint_directory: Path = PROJECT_ROOT / "outputs" / "checkpoints"
     log_directory: Path = PROJECT_ROOT / "outputs" / "logs"
@@ -94,6 +109,8 @@ class ExperimentConfiguration:
         "gaussian_class_channel_time",
         "vae_reconstruction",
         "conditional_vae_generation",
+        "class_specific_vae_generation",
+        "hierarchical_conditional_vae_generation",
     )
 
     split_seed: int = 42
@@ -127,6 +144,25 @@ class ExperimentConfiguration:
     cvae_early_stopping_patience: int = 15
     cvae_kl_warmup_epochs: int = 10
     cvae_batch_size: int = 32
+
+    # Archived four-model class-specific hierarchical VAE protocol.
+    class_specific_vae_max_epochs: int = 10
+    class_specific_vae_batch_size: int = 15
+    class_specific_vae_generation_seed: int = 10000
+
+    # Post-hoc exploratory shared hierarchical CVAE protocol.
+    # Training duration and stopping rules match the standard CVAE.
+    hierarchical_cvae_max_epochs: int = 100
+    hierarchical_cvae_minimum_epochs: int = 20
+    hierarchical_cvae_early_stopping_patience: int = 15
+    hierarchical_cvae_kl_warmup_epochs: int = 10
+    hierarchical_cvae_batch_size: int = 32
+    hierarchical_cvae_high_latent_dim: int = 32
+    hierarchical_cvae_low_latent_dim: int = 64
+    hierarchical_cvae_label_dim: int = 16
+    hierarchical_cvae_beta: float = 1e-2
+    hierarchical_cvae_learning_rate: float = 1e-3
+    hierarchical_cvae_weight_decay: float = 1e-4
 
     debug: bool = False
     use_cuda: bool = True

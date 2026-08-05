@@ -76,6 +76,8 @@ GAUSSIAN_METHODS = {
 NEURAL_GENERATION_METHODS = {
     "vae_reconstruction",
     "conditional_vae_generation",
+    "class_specific_vae_generation",
+    "hierarchical_conditional_vae_generation",
 }
 
 
@@ -281,6 +283,18 @@ def _generated_file(
             / filename
         )
 
+    if method == "class_specific_vae_generation":
+        return (
+            config.class_specific_vae_directory
+            / filename
+        )
+
+    if method == "hierarchical_conditional_vae_generation":
+        return (
+            config.hierarchical_conditional_vae_directory
+            / filename
+        )
+
     raise ValueError(
         f"No generated-data path configured for {method}"
     )
@@ -446,9 +460,19 @@ def prepare_training_data(
                 generation_command = (
                     "python -m experiments.vae_make"
                 )
-            else:
+            elif method == "conditional_vae_generation":
                 generation_command = (
                     "python -m experiments.cvae_generate"
+                )
+            elif method == "class_specific_vae_generation":
+                generation_command = (
+                    "python -m "
+                    "experiments.vae_class_generate"
+                )
+            else:
+                generation_command = (
+                    "python -m "
+                    "experiments.hierarchical_cvae_generate"
                 )
 
             raise FileNotFoundError(
@@ -483,15 +507,34 @@ def prepare_training_data(
                 "synthetic_vae_reconstruction"
             )
 
-        else:
+        elif method == "conditional_vae_generation":
             description = (
-                "Class-conditioned VAE samples generated "
-                "from the latent prior using central "
-                "training labels; validation and test "
-                "remain real."
+                "Shared flat class-conditioned VAE samples "
+                "generated from the latent prior; validation "
+                "and test remain real."
             )
             train_data_type = (
                 "synthetic_conditional_vae"
+            )
+
+        elif method == "class_specific_vae_generation":
+            description = (
+                "Four independent class-specific hierarchical "
+                "hvEEGNet VAEs; genuine prior generation; "
+                "validation and test remain real."
+            )
+            train_data_type = (
+                "synthetic_class_specific_vae"
+            )
+
+        else:
+            description = (
+                "Shared hierarchical class-conditioned VAE "
+                "samples generated from learned class-dependent "
+                "two-level priors; validation and test remain real."
+            )
+            train_data_type = (
+                "synthetic_hierarchical_conditional_vae"
             )
 
     else:

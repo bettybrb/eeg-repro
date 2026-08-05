@@ -10,7 +10,7 @@ SUBJECTS="1,2,3,4,5,6,7,8,9"
 GENERATOR_SEEDS="0,1,2"
 CLASSIFIER_SEEDS="0,1,2"
 
-METHODS="baseline,gaussian_unconditional,gaussian_channel,gaussian_class,gaussian_time,gaussian_channel_time,gaussian_class_time,gaussian_class_channel,gaussian_class_channel_time,vae_reconstruction,conditional_vae_generation"
+METHODS="baseline,gaussian_unconditional,gaussian_channel,gaussian_class,gaussian_time,gaussian_channel_time,gaussian_class_time,gaussian_class_channel,gaussian_class_channel_time,vae_reconstruction,conditional_vae_generation,class_specific_vae_generation,hierarchical_conditional_vae_generation"
 
 cd "$PROJECT_ROOT"
 
@@ -82,6 +82,14 @@ assert CONFIG.cvae_max_epochs == 100
 assert CONFIG.cvae_minimum_epochs == 20
 assert CONFIG.cvae_early_stopping_patience == 15
 assert CONFIG.cvae_kl_warmup_epochs == 10
+
+assert CONFIG.class_specific_vae_max_epochs == 10
+assert CONFIG.class_specific_vae_batch_size == 15
+
+assert CONFIG.hierarchical_cvae_max_epochs == 100
+assert CONFIG.hierarchical_cvae_minimum_epochs == 20
+assert CONFIG.hierarchical_cvae_early_stopping_patience == 15
+assert CONFIG.hierarchical_cvae_kl_warmup_epochs == 10
 
 assert CONFIG.max_epochs == 120
 assert CONFIG.max_increase_epochs == 30
@@ -187,6 +195,25 @@ echo "[STAGE 3/6] Training final conditional VAE models"
   --cuda
 
 echo
+echo "[ADDITIONAL] Training class-specific hierarchical VAE generators"
+
+"$VAE_PY" \
+  -m experiments.vae_class_generate \
+  --repo external/vae_repo \
+  --subjects "$SUBJECTS" \
+  --generator-seeds "$GENERATOR_SEEDS" \
+  --cuda
+
+echo
+echo "[ADDITIONAL] Training shared hierarchical conditional VAE generators"
+
+"$VAE_PY" \
+  -m experiments.hierarchical_cvae_generate \
+  --subjects "$SUBJECTS" \
+  --generator-seeds "$GENERATOR_SEEDS" \
+  --cuda
+
+echo
 echo "[STAGE 4/6] Validating all neural generated datasets"
 
 "$VAE_PY" - <<'PY'
@@ -203,6 +230,12 @@ methods = {
     ),
     "conditional_vae_generation": (
         CONFIG.conditional_vae_directory
+    ),
+    "class_specific_vae_generation": (
+        CONFIG.class_specific_vae_directory
+    ),
+    "hierarchical_conditional_vae_generation": (
+        CONFIG.hierarchical_conditional_vae_directory
     ),
 }
 
@@ -272,10 +305,10 @@ for subject_id in CONFIG.subject_numbers:
                 f"std={standard_deviation:.6f}"
             )
 
-assert validated_files == 54
+assert validated_files == 108
 
 print(
-    "All 54 neural generated datasets passed."
+    "All 108 neural generated datasets passed."
 )
 PY
 
@@ -402,9 +435,9 @@ if unexpected:
         + repr(sorted(unexpected))
     )
 
-if len(successful) != 837:
+if len(successful) != 999:
     raise RuntimeError(
-        "Expected 837 successful result rows, "
+        "Expected 999 successful result rows, "
         f"found {len(successful)}."
     )
 
@@ -436,7 +469,7 @@ failed_rows = results[
 print()
 print("Successful final rows:", len(successful))
 print("Failure-attempt rows:", len(failed_rows))
-print("Expected final rows: 837")
+print("Expected final rows: 999")
 print("Final result completeness passed.")
 PY
 
