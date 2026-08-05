@@ -81,7 +81,7 @@ class ExperimentConfiguration:
 
     experiment_names: tuple[str, ...] = (
         "baseline",
-        "gaussian_global",
+        "gaussian_unconditional",
         "gaussian_channel",
         "gaussian_class",
         "gaussian_time",

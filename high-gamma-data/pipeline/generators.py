@@ -1,342 +1,529 @@
 import copy
+from dataclasses import dataclass
 
 import numpy as np
 
 
-GAUSSIAN_EXPERIMENT_TYPES = [
-    "gaussian_channel",
-    "gaussian_class_channel_train_only",
-    "gaussian_global",
-    "gaussian_class",
-    "gaussian_time",
-    "gaussian_channel_time",
-    "gaussian_class_time",
-    "gaussian_class_channel_time",
-]
-
-VAE_EXPERIMENT_TYPES = [
-    "vae_recon_train_only",
-]
-
-VAE_SEED_BY_SUBJECT = {
-    1: 0,
-    2: 0,
-    3: 0,
-    4: 0,
-    5: 0,
-    6: 0,
-    7: 0,
-    8: 0,
-    9: 1,
+GAUSSIAN_METHODS = {
+    "gaussian_unconditional": {
+        "class": False,
+        "channel": False,
+        "time": False,
+        "description": (
+            "one mean and standard deviation for all training EEG values"
+        ),
+    },
+    "gaussian_channel": {
+        "class": False,
+        "channel": True,
+        "time": False,
+        "description": (
+            "one mean and standard deviation per EEG channel"
+        ),
+    },
+    "gaussian_class": {
+        "class": True,
+        "channel": False,
+        "time": False,
+        "description": (
+            "one mean and standard deviation per motor-imagery class"
+        ),
+    },
+    "gaussian_time": {
+        "class": False,
+        "channel": False,
+        "time": True,
+        "description": (
+            "one mean and standard deviation per time sample"
+        ),
+    },
+    "gaussian_channel_time": {
+        "class": False,
+        "channel": True,
+        "time": True,
+        "description": (
+            "one mean and standard deviation per channel and time sample"
+        ),
+    },
+    "gaussian_class_time": {
+        "class": True,
+        "channel": False,
+        "time": True,
+        "description": (
+            "one mean and standard deviation per class and time sample"
+        ),
+    },
+    "gaussian_class_channel": {
+        "class": True,
+        "channel": True,
+        "time": False,
+        "description": (
+            "one mean and standard deviation per class and channel"
+        ),
+    },
+    "gaussian_class_channel_time": {
+        "class": True,
+        "channel": True,
+        "time": True,
+        "description": (
+            "one mean and standard deviation per class, channel "
+            "and time sample"
+        ),
+    },
 }
+
+
+NEURAL_GENERATION_METHODS = {
+    "vae_reconstruction",
+    "conditional_vae_generation",
+}
+
+
+@dataclass(frozen=True)
+class PreparedTrainingData:
+    dataset: object
+    train_data_type: str
+    train_data_file: str
+    n_real_train_trials: int
+    n_synthetic_train_trials: int
+    notes: str
 
 
 def copy_dataset(dataset):
     copied = copy.copy(dataset)
-    copied.X = np.array(dataset.X, copy=True)
-    copied.y = np.array(dataset.y, copy=True)
+    copied.X = np.asarray(
+        dataset.X,
+        dtype=np.float32,
+    ).copy()
+    copied.y = np.asarray(
+        dataset.y,
+        dtype=np.int64,
+    ).copy()
     return copied
 
 
-def safe_std(values):
-    std = np.std(values)
-    if std == 0 or not np.isfinite(std):
-        std = 1e-6
-    return std
+def _safe_std(values, axis=None):
+    standard_deviation = np.std(
+        values,
+        axis=axis,
+    )
+
+    return np.where(
+        np.isfinite(standard_deviation)
+        & (standard_deviation > 0),
+        standard_deviation,
+        1e-6,
+    )
 
 
-def get_gaussian_experiment_settings(experiment_type):
-    settings = {
-        "gaussian_channel": {
-            "subject": True,
-            "class": False,
-            "channel": True,
-            "time": False,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific channel Gaussian; one mean/std per channel; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-        "gaussian_class_channel_train_only": {
-            "subject": True,
-            "class": True,
-            "channel": True,
-            "time": False,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific class + channel Gaussian; one mean/std per class and channel; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-        "gaussian_global": {
-            "subject": True,
-            "class": False,
-            "channel": False,
-            "time": False,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific global Gaussian; one mean/std for all EEG values; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-        "gaussian_class": {
-            "subject": True,
-            "class": True,
-            "channel": False,
-            "time": False,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific class Gaussian; one mean/std per class; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-        "gaussian_time": {
-            "subject": True,
-            "class": False,
-            "channel": False,
-            "time": True,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific time Gaussian; one mean/std per time point; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-        "gaussian_channel_time": {
-            "subject": True,
-            "class": False,
-            "channel": True,
-            "time": True,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific channel + time Gaussian; one mean/std per channel and time point; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-        "gaussian_class_time": {
-            "subject": True,
-            "class": True,
-            "channel": False,
-            "time": True,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific class + time Gaussian; one mean/std per class and time point; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-        "gaussian_class_channel_time": {
-            "subject": True,
-            "class": True,
-            "channel": True,
-            "time": True,
-            "split_mode": "train_synthetic_only",
-            "description": (
-                "subject-specific class + channel + time Gaussian; one mean/std per class, channel, and time point; "
-                "train synthetic only; valid/test real"
-            ),
-        },
-    }
-
-    if experiment_type not in settings:
-        raise ValueError(f"Unknown Gaussian experiment type: {experiment_type}")
-
-    return settings[experiment_type]
-
-
-def generate_subject_specific_gaussian_eeg(
-    train_set,
-    target_set,
-    condition_on_class,
+def _sample_gaussian_group(
+    source,
+    output_shape,
     condition_on_channel,
     condition_on_time,
     rng,
 ):
-    train_y = np.asarray(train_set.y)
-    target_y = np.asarray(target_set.y)
+    if condition_on_channel and condition_on_time:
+        mean = np.mean(source, axis=0)
+        standard_deviation = _safe_std(
+            source,
+            axis=0,
+        )
 
-    fake_X = np.zeros_like(target_set.X)
+    elif condition_on_channel:
+        mean = np.mean(
+            source,
+            axis=(0, 2),
+        )[None, :, None]
+        standard_deviation = _safe_std(
+            source,
+            axis=(0, 2),
+        )[None, :, None]
 
-    n_channels = train_set.X.shape[1]
-    n_times = train_set.X.shape[2]
+    elif condition_on_time:
+        mean = np.mean(
+            source,
+            axis=(0, 1),
+        )[None, None, :]
+        standard_deviation = _safe_std(
+            source,
+            axis=(0, 1),
+        )[None, None, :]
 
-    global_train_values = train_set.X
-    global_mean = np.mean(global_train_values)
-    global_std = safe_std(global_train_values)
+    else:
+        mean = float(np.mean(source))
+        standard_deviation = float(
+            _safe_std(source)
+        )
+
+    return rng.normal(
+        loc=mean,
+        scale=standard_deviation,
+        size=output_shape,
+    ).astype(np.float32)
+
+
+def generate_gaussian_training_data(
+    X_train,
+    y_train,
+    condition_on_class,
+    condition_on_channel,
+    condition_on_time,
+    generator_seed,
+):
+    """
+    Fit Gaussian statistics only to the central real training split
+    and generate a synthetic training set with matching labels.
+    """
+
+    X_train = np.asarray(
+        X_train,
+        dtype=np.float32,
+    )
+    y_train = np.asarray(
+        y_train,
+        dtype=np.int64,
+    )
+
+    if X_train.ndim != 3:
+        raise RuntimeError(
+            "Expected real training EEG shaped "
+            f"(trials, channels, time), got {X_train.shape}"
+        )
+
+    if y_train.shape != (len(X_train),):
+        raise RuntimeError(
+            "Incompatible real training arrays: "
+            f"EEG={X_train.shape}, labels={y_train.shape}"
+        )
+
+    rng = np.random.RandomState(
+        generator_seed
+    )
+    X_generated = np.empty_like(
+        X_train
+    )
 
     if condition_on_class:
-        class_ids = np.unique(np.concatenate([train_y, target_y]))
+        class_ids = np.unique(y_train)
     else:
         class_ids = [None]
 
     for class_id in class_ids:
         if class_id is None:
-            train_class_mask = np.ones(len(train_y), dtype=bool)
-            target_class_mask = np.ones(len(target_y), dtype=bool)
-        else:
-            train_class_mask = train_y == class_id
-            target_class_mask = target_y == class_id
-
-        if not np.any(target_class_mask):
-            continue
-
-        if not np.any(train_class_mask):
-            fake_X[target_class_mask, :, :] = rng.normal(
-                loc=global_mean,
-                scale=global_std,
-                size=fake_X[target_class_mask, :, :].shape,
+            source_mask = np.ones(
+                len(y_train),
+                dtype=bool,
             )
-            continue
-
-        if condition_on_channel and condition_on_time:
-            for channel_i in range(n_channels):
-                for time_i in range(n_times):
-                    train_values = train_set.X[train_class_mask, channel_i, time_i]
-                    mean = np.mean(train_values)
-                    std = safe_std(train_values)
-
-                    fake_X[target_class_mask, channel_i, time_i] = rng.normal(
-                        loc=mean,
-                        scale=std,
-                        size=fake_X[target_class_mask, channel_i, time_i].shape,
-                    )
-
-        elif condition_on_channel and not condition_on_time:
-            for channel_i in range(n_channels):
-                train_values = train_set.X[train_class_mask, channel_i, :]
-                mean = np.mean(train_values)
-                std = safe_std(train_values)
-
-                fake_X[target_class_mask, channel_i, :] = rng.normal(
-                    loc=mean,
-                    scale=std,
-                    size=fake_X[target_class_mask, channel_i, :].shape,
-                )
-
-        elif condition_on_time and not condition_on_channel:
-            for time_i in range(n_times):
-                train_values = train_set.X[train_class_mask, :, time_i]
-                mean = np.mean(train_values)
-                std = safe_std(train_values)
-
-                fake_X[target_class_mask, :, time_i] = rng.normal(
-                    loc=mean,
-                    scale=std,
-                    size=fake_X[target_class_mask, :, time_i].shape,
-                )
-
+            target_mask = source_mask
         else:
-            train_values = train_set.X[train_class_mask, :, :]
-            mean = np.mean(train_values)
-            std = safe_std(train_values)
+            source_mask = y_train == class_id
+            target_mask = source_mask
 
-            fake_X[target_class_mask, :, :] = rng.normal(
-                loc=mean,
-                scale=std,
-                size=fake_X[target_class_mask, :, :].shape,
+        if not np.any(source_mask):
+            raise RuntimeError(
+                f"No real training trials found for class {class_id}"
             )
 
-    return fake_X
+        X_generated[target_mask] = (
+            _sample_gaussian_group(
+                source=X_train[source_mask],
+                output_shape=(
+                    X_generated[target_mask].shape
+                ),
+                condition_on_channel=(
+                    condition_on_channel
+                ),
+                condition_on_time=(
+                    condition_on_time
+                ),
+                rng=rng,
+            )
+        )
+
+    if not np.isfinite(
+        X_generated
+    ).all():
+        raise RuntimeError(
+            "Generated Gaussian EEG contains NaN or infinity"
+        )
+
+    return X_generated
 
 
-
-def load_vae_reconstructed_train(subject_id):
-    vae_seed = VAE_SEED_BY_SUBJECT.get(subject_id)
-
-    if vae_seed is None:
-        raise ValueError(f"No VAE seed configured for subject {subject_id}")
-
-    vae_path = f"saved_vae/S{subject_id:02d}_seed{vae_seed}_vae_recon.npz"
-    data = np.load(vae_path)
-
-    X_recon = data["X_recon"].astype(np.float32)
-    y_recon = data["y"].astype(np.int64)
-
-    return X_recon, y_recon, vae_seed, vae_path
-
-
-def apply_experiment_transformation(
-    train_set,
-    valid_set,
-    test_set,
-    experiment_type,
+def _generated_file(
+    method,
     subject_id,
-    seed,
+    generator_seed,
+    config,
 ):
-    train_set = copy_dataset(train_set)
-    valid_set = copy_dataset(valid_set)
-    test_set = copy_dataset(test_set)
+    filename = (
+        f"S{subject_id:02d}_"
+        f"generator-seed{generator_seed}.npz"
+    )
 
-    if experiment_type == "baseline":
+    if method in GAUSSIAN_METHODS:
         return (
-            train_set,
-            valid_set,
-            test_set,
-            "real",
-            "real_train_valid_test",
-            "baseline; no perturbation; real train/valid/test EEG",
+            config.gaussian_data_directory
+            / method
+            / filename
         )
 
-    if experiment_type in GAUSSIAN_EXPERIMENT_TYPES:
-        settings = get_gaussian_experiment_settings(experiment_type)
-
-        if settings["split_mode"] != "train_synthetic_only":
-            raise RuntimeError("Only train_synthetic_only is allowed for Gaussian experiments.")
-
-        rng = np.random.RandomState(seed)
-
-        train_fake = generate_subject_specific_gaussian_eeg(
-            train_set=train_set,
-            target_set=train_set,
-            condition_on_class=settings["class"],
-            condition_on_channel=settings["channel"],
-            condition_on_time=settings["time"],
-            rng=rng,
+    if method == "vae_reconstruction":
+        return (
+            config.vae_reconstruction_directory
+            / filename
         )
 
-        train_set.X = train_fake
-
+    if method == "conditional_vae_generation":
         return (
-            train_set,
-            valid_set,
-            test_set,
-            "synthetic_gaussian",
-            "train_synthetic_only",
-            settings["description"],
+            config.conditional_vae_directory
+            / filename
         )
 
-    if experiment_type in VAE_EXPERIMENT_TYPES:
-        X_recon, y_recon, vae_seed, vae_path = load_vae_reconstructed_train(subject_id)
+    raise ValueError(
+        f"No generated-data path configured for {method}"
+    )
 
-        if X_recon.shape[1:] != train_set.X.shape[1:]:
-            raise RuntimeError(
-                f"VAE shape mismatch for subject {subject_id}: "
-                f"VAE {X_recon.shape}, real train {train_set.X.shape}"
-            )
 
-        if len(y_recon) != len(train_set.y):
-            raise RuntimeError(
-                f"VAE label length mismatch for subject {subject_id}: "
-                f"VAE {len(y_recon)}, real train {len(train_set.y)}"
-            )
+def _validate_generated_dataset(
+    X_generated,
+    y_generated,
+    real_train_set,
+    method,
+):
+    X_generated = np.asarray(
+        X_generated,
+        dtype=np.float32,
+    )
+    y_generated = np.asarray(
+        y_generated,
+        dtype=np.int64,
+    )
 
-        train_set.X = X_recon
-        train_set.y = y_recon
+    if X_generated.shape != real_train_set.X.shape:
+        raise RuntimeError(
+            f"{method} EEG shape {X_generated.shape} "
+            "does not match central training shape "
+            f"{real_train_set.X.shape}"
+        )
 
-        return (
-            train_set,
-            valid_set,
-            test_set,
-            "synthetic_vae_reconstruction",
-            "train_synthetic_only",
-            (
-                f"VAE reconstructed train-only EEG from {vae_path}; "
-                f"VAE model seed={vae_seed}; valid/test are real EEG"
+    if not np.array_equal(
+        y_generated,
+        real_train_set.y,
+    ):
+        raise RuntimeError(
+            f"{method} labels do not exactly match "
+            "the central training labels"
+        )
+
+    if not np.isfinite(
+        X_generated
+    ).all():
+        raise RuntimeError(
+            f"{method} EEG contains NaN or infinity"
+        )
+
+    return X_generated, y_generated
+
+
+def prepare_training_data(
+    real_train_set,
+    method,
+    subject_id,
+    generator_seed,
+    split_file,
+    config,
+    overwrite_gaussian=False,
+):
+    """
+    Create or load classifier training data.
+
+    Validation and test datasets are not passed here and therefore
+    cannot accidentally be transformed.
+    """
+
+    if method == "baseline":
+        return PreparedTrainingData(
+            dataset=copy_dataset(
+                real_train_set
+            ),
+            train_data_type="real",
+            train_data_file="",
+            n_real_train_trials=len(
+                real_train_set.X
+            ),
+            n_synthetic_train_trials=0,
+            notes=(
+                "Real training EEG from the central split; "
+                "validation and official test EEG are real."
             ),
         )
 
-    if experiment_type == "hveegnet_recon_train_only":
-        raise NotImplementedError(
-            "Old hvEEGNet placeholder kept but disabled. Use vae_recon_train_only."
+    if generator_seed is None:
+        raise ValueError(
+            f"A generator seed is required for {method}"
         )
 
-    raise ValueError(f"Unknown experiment_type: {experiment_type}")
+    generated_file = _generated_file(
+        method=method,
+        subject_id=subject_id,
+        generator_seed=generator_seed,
+        config=config,
+    )
+
+    if method in GAUSSIAN_METHODS:
+        settings = GAUSSIAN_METHODS[
+            method
+        ]
+
+        if (
+            generated_file.exists()
+            and not overwrite_gaussian
+        ):
+            with np.load(
+                generated_file,
+                allow_pickle=False,
+            ) as data:
+                X_generated = data["X"]
+                y_generated = data["y"]
+
+        else:
+            X_generated = (
+                generate_gaussian_training_data(
+                    X_train=real_train_set.X,
+                    y_train=real_train_set.y,
+                    condition_on_class=(
+                        settings["class"]
+                    ),
+                    condition_on_channel=(
+                        settings["channel"]
+                    ),
+                    condition_on_time=(
+                        settings["time"]
+                    ),
+                    generator_seed=generator_seed,
+                )
+            )
+
+            y_generated = np.asarray(
+                real_train_set.y,
+                dtype=np.int64,
+            ).copy()
+
+            generated_file.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            np.savez_compressed(
+                generated_file,
+                X=X_generated,
+                y=y_generated,
+                protocol_id=config.protocol_id,
+                method=method,
+                subject_id=subject_id,
+                generator_seed=generator_seed,
+                split_file=str(split_file),
+                source=(
+                    "Gaussian statistics fitted only "
+                    "to central real training EEG"
+                ),
+            )
+
+        description = (
+            f"{settings['description']}; statistics fitted "
+            "only to the central real training split; "
+            "validation and test remain real."
+        )
+        train_data_type = (
+            "synthetic_gaussian"
+        )
+
+    elif method in NEURAL_GENERATION_METHODS:
+        if not generated_file.exists():
+            if method == "vae_reconstruction":
+                generation_command = (
+                    "python -m experiments.vae_make"
+                )
+            else:
+                generation_command = (
+                    "python -m experiments.cvae_generate"
+                )
+
+            raise FileNotFoundError(
+                f"Missing generated training data: "
+                f"{generated_file}\n"
+                f"Run `{generation_command}` first."
+            )
+
+        with np.load(
+            generated_file,
+            allow_pickle=False,
+        ) as data:
+            if (
+                "X" not in data.files
+                or "y" not in data.files
+            ):
+                raise RuntimeError(
+                    f"{generated_file} must contain "
+                    "the standard keys X and y"
+                )
+
+            X_generated = data["X"]
+            y_generated = data["y"]
+
+        if method == "vae_reconstruction":
+            description = (
+                "Hierarchical VAE reconstructions of "
+                "central real training trials; validation "
+                "and test remain real."
+            )
+            train_data_type = (
+                "synthetic_vae_reconstruction"
+            )
+
+        else:
+            description = (
+                "Class-conditioned VAE samples generated "
+                "from the latent prior using central "
+                "training labels; validation and test "
+                "remain real."
+            )
+            train_data_type = (
+                "synthetic_conditional_vae"
+            )
+
+    else:
+        raise ValueError(
+            f"Unknown method: {method}"
+        )
+
+    (
+        X_generated,
+        y_generated,
+    ) = _validate_generated_dataset(
+        X_generated=X_generated,
+        y_generated=y_generated,
+        real_train_set=real_train_set,
+        method=method,
+    )
+
+    generated_set = copy_dataset(
+        real_train_set
+    )
+    generated_set.X = X_generated
+    generated_set.y = y_generated
+
+    return PreparedTrainingData(
+        dataset=generated_set,
+        train_data_type=train_data_type,
+        train_data_file=str(
+            generated_file
+        ),
+        n_real_train_trials=0,
+        n_synthetic_train_trials=len(
+            X_generated
+        ),
+        notes=description,
+    )

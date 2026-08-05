@@ -45,7 +45,10 @@ def summarise(raw_results, participant_output, method_output):
         )
         .agg(
             participant_test_accuracy=("classifier_seed_mean_test_accuracy", "mean"),
-            n_generator_seeds=("generator_seed", "count"),
+            n_generator_conditions=(
+                "classifier_seed_mean_test_accuracy",
+                "size",
+            ),
             n_classifier_runs=("n_classifier_runs", "sum"),
         )
     )
