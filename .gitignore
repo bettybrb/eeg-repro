@@ -81,3 +81,8 @@ high-gamma-data/CURRENT_RUN_README.txt
 # Temporary summary/table notebook generators
 high-gamma-data/create_results_summary_notebook.py
 high-gamma-data/create_simple_results_table_notebook.py
+high-gamma-data/archive/
+high-gamma-data/saved_*/
+archive/
+frozen_backup/
+high-gamma-data/outputs/

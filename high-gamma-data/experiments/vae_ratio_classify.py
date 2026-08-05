@@ -8,14 +8,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from braindecode_setup import apply_compatibility_patches
+from pipeline.braindecode_setup import apply_compatibility_patches
 
 apply_compatibility_patches()
 
 from braindecode.datautil.signal_target import SignalAndTarget
 
-import run
-from config import CONFIG
+from experiments import run
+from pipeline.config import CONFIG
 
 
 # ============================================================
@@ -89,9 +89,9 @@ def copy_dataset(dataset):
 
 def find_real_split_directory(subjects):
     candidates = [
-        Path("saved_vae_run1/classifier_real_splits"),
-        Path("saved_vae_run2/classifier_real_splits"),
-        Path("saved_vae/classifier_real_splits"),
+        Path("outputs/vae_runs/run1/classifier_real_splits"),
+        Path("outputs/vae_runs/run2/classifier_real_splits"),
+        Path("outputs/vae_runs/run1/classifier_real_splits"),
     ]
 
     for candidate in candidates:
@@ -673,12 +673,12 @@ def main():
 
     parser.add_argument(
         "--run1-dir",
-        default="saved_vae_run1",
+        default="outputs/vae_runs/run1",
     )
 
     parser.add_argument(
         "--run2-dir",
-        default="saved_vae_run2",
+        default="outputs/vae_runs/run2",
     )
 
     parser.add_argument(
@@ -700,7 +700,7 @@ def main():
     parser.add_argument(
         "--results",
         default=(
-            "results/"
+            "outputs/results/"
             "vae_fixed_size_replacement_results.csv"
         ),
     )

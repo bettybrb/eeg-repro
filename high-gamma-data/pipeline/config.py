@@ -30,7 +30,7 @@ class ExperimentConfiguration:
     debug: bool = False
     use_cuda: bool = True
 
-    results_csv: Path = Path("results/vae_only_classifier_results.csv")
+    results_csv: Path = Path("outputs/results/vae_only_classifier_results.csv")
 
 
 CONFIG = ExperimentConfiguration()

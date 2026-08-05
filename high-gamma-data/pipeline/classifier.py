@@ -3,7 +3,7 @@ import torch as th
 import torch.nn.functional as F
 from torch import optim
 
-from braindecode_setup import apply_compatibility_patches
+from pipeline.braindecode_setup import apply_compatibility_patches
 
 apply_compatibility_patches()
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from vae_make import add_vae_repo_to_path, parse_int_list, set_seed
+from experiments.vae_make import add_vae_repo_to_path, parse_int_list, set_seed
 
 
 def labels_of(dataset):
@@ -283,7 +283,7 @@ def main():
     parser.add_argument("--repo", default="external/vae_repo")
     parser.add_argument(
         "--out-dir",
-        default="saved_vae_class_generated",
+        default="outputs/generated/class_specific_vae",
     )
     parser.add_argument("--subjects", default="1")
     parser.add_argument("--seeds", default="0")

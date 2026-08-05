@@ -378,8 +378,8 @@ def main():
         ),
     )
 
-    parser.add_argument("--run1-dir", default="saved_vae_run1")
-    parser.add_argument("--run2-dir", default="saved_vae_run2")
+    parser.add_argument("--run1-dir", default="outputs/vae_runs/run1")
+    parser.add_argument("--run2-dir", default="outputs/vae_runs/run2")
 
     parser.add_argument("--subjects", default="1")
     parser.add_argument("--seeds", default="0")

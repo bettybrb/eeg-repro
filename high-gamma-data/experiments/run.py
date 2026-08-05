@@ -1,11 +1,11 @@
 import traceback
 
-from braindecode_setup import apply_compatibility_patches, setup_logging
-from classifier import run_classifier
-from config import CONFIG
-from data import load_train_valid_test
-from generators import apply_experiment_transformation
-from results import load_completed, save_failure, save_success
+from pipeline.braindecode_setup import apply_compatibility_patches, setup_logging
+from pipeline.classifier import run_classifier
+from pipeline.config import CONFIG
+from pipeline.data import load_train_valid_test
+from pipeline.generators import apply_experiment_transformation
+from pipeline.results import load_completed, save_failure, save_success
 
 
 def run_all_experiments(config):

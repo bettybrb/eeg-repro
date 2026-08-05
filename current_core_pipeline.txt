@@ -1,0 +1,1245 @@
+
+========================================================================
+FILE: pipeline/config.py
+========================================================================
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass
+class ExperimentConfiguration:
+    dataset_directory: Path = Path("data/raw_data")
+
+    subject_numbers: tuple = tuple(range(1, 10))
+
+    # Same classifier seeds as your previous baseline/Gaussian full runs.
+    random_seeds: tuple = (0, 1, 2)
+
+    # VAE classification only.
+    experiment_names: tuple = (
+        "vae_recon_train_only",
+    )
+
+    model_name: str = "shallow"
+    low_cut_hz: float = 4.0
+
+    input_time_length: int = 1000
+    batch_size: int = 60
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+
+    max_epochs: int = 120
+    max_increase_epochs: int = 30
+
+    debug: bool = False
+    use_cuda: bool = True
+
+    results_csv: Path = Path("outputs/results/vae_only_classifier_results.csv")
+
+
+CONFIG = ExperimentConfiguration()
+
+========================================================================
+FILE: pipeline/data.py
+========================================================================
+from pathlib import Path
+import numpy as np
+
+from pipeline.braindecode_setup import apply_compatibility_patches
+
+apply_compatibility_patches()
+
+from braindecode.datautil.signal_target import SignalAndTarget
+
+
+def _make_signal_and_target(X, y):
+    X = np.asarray(X, dtype=np.float32)
+    y = np.asarray(y, dtype=np.int64)
+
+    if X.ndim != 3:
+        raise RuntimeError(f"Expected EEG shape (trials, channels, time), got {X.shape}")
+
+    return SignalAndTarget(X, y)
+
+
+def load_train_valid_test(subject_id, config):
+    split_file = Path("outputs/vae_runs/run1/classifier_real_splits") / f"S{subject_id:02d}_real_splits.npz"
+
+    if not split_file.exists():
+        raise FileNotFoundError(
+            f"Missing {split_file}. Run export_vae_classifier_real_splits.py first."
+        )
+
+    data = np.load(split_file)
+
+    train_set = _make_signal_and_target(data["X_train"], data["y_train"])
+    valid_set = _make_signal_and_target(data["X_valid"], data["y_valid"])
+    test_set = _make_signal_and_target(data["X_test"], data["y_test"])
+
+    return train_set, valid_set, test_set
+
+========================================================================
+FILE: pipeline/generators.py
+========================================================================
+import copy
+
+import numpy as np
+
+
+GAUSSIAN_EXPERIMENT_TYPES = [
+    "gaussian_channel",
+    "gaussian_class_channel_train_only",
+    "gaussian_global",
+    "gaussian_class",
+    "gaussian_time",
+    "gaussian_channel_time",
+    "gaussian_class_time",
+    "gaussian_class_channel_time",
+]
+
+VAE_EXPERIMENT_TYPES = [
+    "vae_recon_train_only",
+]
+
+VAE_SEED_BY_SUBJECT = {
+    1: 0,
+    2: 0,
+    3: 0,
+    4: 0,
+    5: 0,
+    6: 0,
+    7: 0,
+    8: 0,
+    9: 1,
+}
+
+
+def copy_dataset(dataset):
+    copied = copy.copy(dataset)
+    copied.X = np.array(dataset.X, copy=True)
+    copied.y = np.array(dataset.y, copy=True)
+    return copied
+
+
+def safe_std(values):
+    std = np.std(values)
+    if std == 0 or not np.isfinite(std):
+        std = 1e-6
+    return std
+
+
+def get_gaussian_experiment_settings(experiment_type):
+    settings = {
+        "gaussian_channel": {
+            "subject": True,
+            "class": False,
+            "channel": True,
+            "time": False,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific channel Gaussian; one mean/std per channel; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+        "gaussian_class_channel_train_only": {
+            "subject": True,
+            "class": True,
+            "channel": True,
+            "time": False,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific class + channel Gaussian; one mean/std per class and channel; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+        "gaussian_global": {
+            "subject": True,
+            "class": False,
+            "channel": False,
+            "time": False,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific global Gaussian; one mean/std for all EEG values; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+        "gaussian_class": {
+            "subject": True,
+            "class": True,
+            "channel": False,
+            "time": False,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific class Gaussian; one mean/std per class; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+        "gaussian_time": {
+            "subject": True,
+            "class": False,
+            "channel": False,
+            "time": True,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific time Gaussian; one mean/std per time point; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+        "gaussian_channel_time": {
+            "subject": True,
+            "class": False,
+            "channel": True,
+            "time": True,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific channel + time Gaussian; one mean/std per channel and time point; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+        "gaussian_class_time": {
+            "subject": True,
+            "class": True,
+            "channel": False,
+            "time": True,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific class + time Gaussian; one mean/std per class and time point; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+        "gaussian_class_channel_time": {
+            "subject": True,
+            "class": True,
+            "channel": True,
+            "time": True,
+            "split_mode": "train_synthetic_only",
+            "description": (
+                "subject-specific class + channel + time Gaussian; one mean/std per class, channel, and time point; "
+                "train synthetic only; valid/test real"
+            ),
+        },
+    }
+
+    if experiment_type not in settings:
+        raise ValueError(f"Unknown Gaussian experiment type: {experiment_type}")
+
+    return settings[experiment_type]
+
+
+def generate_subject_specific_gaussian_eeg(
+    train_set,
+    target_set,
+    condition_on_class,
+    condition_on_channel,
+    condition_on_time,
+    rng,
+):
+    train_y = np.asarray(train_set.y)
+    target_y = np.asarray(target_set.y)
+
+    fake_X = np.zeros_like(target_set.X)
+
+    n_channels = train_set.X.shape[1]
+    n_times = train_set.X.shape[2]
+
+    global_train_values = train_set.X
+    global_mean = np.mean(global_train_values)
+    global_std = safe_std(global_train_values)
+
+    if condition_on_class:
+        class_ids = np.unique(np.concatenate([train_y, target_y]))
+    else:
+        class_ids = [None]
+
+    for class_id in class_ids:
+        if class_id is None:
+            train_class_mask = np.ones(len(train_y), dtype=bool)
+            target_class_mask = np.ones(len(target_y), dtype=bool)
+        else:
+            train_class_mask = train_y == class_id
+            target_class_mask = target_y == class_id
+
+        if not np.any(target_class_mask):
+            continue
+
+        if not np.any(train_class_mask):
+            fake_X[target_class_mask, :, :] = rng.normal(
+                loc=global_mean,
+                scale=global_std,
+                size=fake_X[target_class_mask, :, :].shape,
+            )
+            continue
+
+        if condition_on_channel and condition_on_time:
+            for channel_i in range(n_channels):
+                for time_i in range(n_times):
+                    train_values = train_set.X[train_class_mask, channel_i, time_i]
+                    mean = np.mean(train_values)
+                    std = safe_std(train_values)
+
+                    fake_X[target_class_mask, channel_i, time_i] = rng.normal(
+                        loc=mean,
+                        scale=std,
+                        size=fake_X[target_class_mask, channel_i, time_i].shape,
+                    )
+
+        elif condition_on_channel and not condition_on_time:
+            for channel_i in range(n_channels):
+                train_values = train_set.X[train_class_mask, channel_i, :]
+                mean = np.mean(train_values)
+                std = safe_std(train_values)
+
+                fake_X[target_class_mask, channel_i, :] = rng.normal(
+                    loc=mean,
+                    scale=std,
+                    size=fake_X[target_class_mask, channel_i, :].shape,
+                )
+
+        elif condition_on_time and not condition_on_channel:
+            for time_i in range(n_times):
+                train_values = train_set.X[train_class_mask, :, time_i]
+                mean = np.mean(train_values)
+                std = safe_std(train_values)
+
+                fake_X[target_class_mask, :, time_i] = rng.normal(
+                    loc=mean,
+                    scale=std,
+                    size=fake_X[target_class_mask, :, time_i].shape,
+                )
+
+        else:
+            train_values = train_set.X[train_class_mask, :, :]
+            mean = np.mean(train_values)
+            std = safe_std(train_values)
+
+            fake_X[target_class_mask, :, :] = rng.normal(
+                loc=mean,
+                scale=std,
+                size=fake_X[target_class_mask, :, :].shape,
+            )
+
+    return fake_X
+
+
+
+def load_vae_reconstructed_train(subject_id):
+    vae_seed = VAE_SEED_BY_SUBJECT.get(subject_id)
+
+    if vae_seed is None:
+        raise ValueError(f"No VAE seed configured for subject {subject_id}")
+
+    vae_path = f"saved_vae/S{subject_id:02d}_seed{vae_seed}_vae_recon.npz"
+    data = np.load(vae_path)
+
+    X_recon = data["X_recon"].astype(np.float32)
+    y_recon = data["y"].astype(np.int64)
+
+    return X_recon, y_recon, vae_seed, vae_path
+
+
+def apply_experiment_transformation(
+    train_set,
+    valid_set,
+    test_set,
+    experiment_type,
+    subject_id,
+    seed,
+):
+    train_set = copy_dataset(train_set)
+    valid_set = copy_dataset(valid_set)
+    test_set = copy_dataset(test_set)
+
+    if experiment_type == "baseline":
+        return (
+            train_set,
+            valid_set,
+            test_set,
+            "real",
+            "real_train_valid_test",
+            "baseline; no perturbation; real train/valid/test EEG",
+        )
+
+    if experiment_type in GAUSSIAN_EXPERIMENT_TYPES:
+        settings = get_gaussian_experiment_settings(experiment_type)
+
+        if settings["split_mode"] != "train_synthetic_only":
+            raise RuntimeError("Only train_synthetic_only is allowed for Gaussian experiments.")
+
+        rng = np.random.RandomState(seed)
+
+        train_fake = generate_subject_specific_gaussian_eeg(
+            train_set=train_set,
+            target_set=train_set,
+            condition_on_class=settings["class"],
+            condition_on_channel=settings["channel"],
+            condition_on_time=settings["time"],
+            rng=rng,
+        )
+
+        train_set.X = train_fake
+
+        return (
+            train_set,
+            valid_set,
+            test_set,
+            "synthetic_gaussian",
+            "train_synthetic_only",
+            settings["description"],
+        )
+
+    if experiment_type in VAE_EXPERIMENT_TYPES:
+        X_recon, y_recon, vae_seed, vae_path = load_vae_reconstructed_train(subject_id)
+
+        if X_recon.shape[1:] != train_set.X.shape[1:]:
+            raise RuntimeError(
+                f"VAE shape mismatch for subject {subject_id}: "
+                f"VAE {X_recon.shape}, real train {train_set.X.shape}"
+            )
+
+        if len(y_recon) != len(train_set.y):
+            raise RuntimeError(
+                f"VAE label length mismatch for subject {subject_id}: "
+                f"VAE {len(y_recon)}, real train {len(train_set.y)}"
+            )
+
+        train_set.X = X_recon
+        train_set.y = y_recon
+
+        return (
+            train_set,
+            valid_set,
+            test_set,
+            "synthetic_vae_reconstruction",
+            "train_synthetic_only",
+            (
+                f"VAE reconstructed train-only EEG from {vae_path}; "
+                f"VAE model seed={vae_seed}; valid/test are real EEG"
+            ),
+        )
+
+    if experiment_type == "hveegnet_recon_train_only":
+        raise NotImplementedError(
+            "Old hvEEGNet placeholder kept but disabled. Use vae_recon_train_only."
+        )
+
+    raise ValueError(f"Unknown experiment_type: {experiment_type}")
+
+========================================================================
+FILE: pipeline/classifier.py
+========================================================================
+import numpy as np
+import torch as th
+import torch.nn.functional as F
+from torch import optim
+
+from pipeline.braindecode_setup import apply_compatibility_patches
+
+apply_compatibility_patches()
+
+from braindecode.datautil.iterators import CropsFromTrialsIterator
+from braindecode.experiments.experiment import Experiment
+from braindecode.experiments.monitors import (
+    LossMonitor,
+    MisclassMonitor,
+    RuntimeMonitor,
+    CroppedTrialMisclassMonitor,
+)
+from braindecode.experiments.stopcriteria import MaxEpochs, NoDecrease, Or
+from braindecode.models.deep4 import Deep4Net
+from braindecode.models.shallow_fbcsp import ShallowFBCSPNet
+from braindecode.models.util import to_dense_prediction_model
+from braindecode.torch_ext.constraints import MaxNormDefaultConstraint
+from braindecode.torch_ext.util import np_to_var, set_random_seeds
+
+
+def run_classifier(
+    train_set,
+    valid_set,
+    test_set,
+    experiment_type,
+    subject_id,
+    seed,
+    train_data,
+    split_mode,
+    notes,
+    config,
+):
+    max_epochs = config.max_epochs
+    if config.debug:
+        max_epochs = 4
+
+    use_cuda = bool(config.use_cuda and th.cuda.is_available())
+
+    set_random_seeds(seed, cuda=use_cuda)
+
+    n_classes = int(np.max(train_set.y) + 1)
+    n_chans = int(train_set.X.shape[1])
+
+    if config.model_name == "deep":
+        model = Deep4Net(
+            n_chans,
+            n_classes,
+            input_time_length=config.input_time_length,
+            final_conv_length=2,
+        ).create_network()
+
+    elif config.model_name == "shallow":
+        model = ShallowFBCSPNet(
+            n_chans,
+            n_classes,
+            input_time_length=config.input_time_length,
+            final_conv_length=30,
+        ).create_network()
+
+    else:
+        raise ValueError("model_name must be 'deep' or 'shallow'")
+
+    to_dense_prediction_model(model)
+
+    if use_cuda:
+        model.cuda()
+
+    model.eval()
+
+    one_trial = np_to_var(train_set.X[:1, :, :config.input_time_length, None])
+    if use_cuda:
+        one_trial = one_trial.cuda()
+
+    out = model(one_trial)
+    n_preds_per_input = out.cpu().data.numpy().shape[2]
+
+    optimizer = optim.Adam(
+        model.parameters(),
+        weight_decay=config.weight_decay,
+        lr=config.learning_rate,
+    )
+
+    iterator = CropsFromTrialsIterator(
+        batch_size=config.batch_size,
+        input_time_length=config.input_time_length,
+        n_preds_per_input=n_preds_per_input,
+        seed=seed,
+    )
+
+    monitors = [
+        LossMonitor(),
+        MisclassMonitor(col_suffix="sample_misclass"),
+        CroppedTrialMisclassMonitor(input_time_length=config.input_time_length),
+        RuntimeMonitor(),
+    ]
+
+    loss_function = lambda preds, targets: F.nll_loss(
+        th.mean(preds, dim=2),
+        targets,
+    )
+
+    stop_criterion = Or([
+        MaxEpochs(max_epochs),
+        NoDecrease("valid_misclass", config.max_increase_epochs),
+    ])
+
+    exp = Experiment(
+        model,
+        train_set,
+        valid_set,
+        test_set,
+        iterator=iterator,
+        loss_function=loss_function,
+        optimizer=optimizer,
+        model_constraint=MaxNormDefaultConstraint(),
+        monitors=monitors,
+        stop_criterion=stop_criterion,
+        remember_best_column="valid_misclass",
+        run_after_early_stop=True,
+        cuda=use_cuda,
+        do_early_stop=True,
+    )
+
+    exp.run()
+
+    best_epoch = exp.epochs_df["valid_misclass"].astype(float).idxmin()
+    best_row = exp.epochs_df.iloc[best_epoch]
+    last_row = exp.epochs_df.iloc[-1]
+
+    best_valid_misclass = float(best_row["valid_misclass"])
+    best_test_misclass = float(best_row["test_misclass"])
+    last_test_misclass = float(last_row["test_misclass"])
+
+    return {
+        "status": "success",
+        "experiment_type": experiment_type,
+        "subject_id": subject_id,
+        "seed": seed,
+        "best_epoch": int(best_epoch),
+        "best_valid_misclass": best_valid_misclass,
+        "best_valid_accuracy": 1.0 - best_valid_misclass,
+        "best_test_misclass": best_test_misclass,
+        "best_test_accuracy": 1.0 - best_test_misclass,
+        "last_test_misclass": last_test_misclass,
+        "last_test_accuracy": 1.0 - last_test_misclass,
+        "n_train_trials": int(len(train_set.X)),
+        "n_valid_trials": int(len(valid_set.X)),
+        "n_test_trials": int(len(test_set.X)),
+        "n_channels": int(train_set.X.shape[1]),
+        "n_times": int(train_set.X.shape[2]),
+        "train_data": train_data,
+        "valid_data": "real",
+        "test_data": "real",
+        "split_mode": split_mode,
+        "notes": notes,
+        "error": "",
+    }
+
+========================================================================
+FILE: pipeline/results.py
+========================================================================
+import csv
+from pathlib import Path
+
+import pandas as pd
+
+
+RESULT_COLUMNS = [
+    "status",
+    "experiment_type",
+    "subject_id",
+    "seed",
+    "best_epoch",
+    "best_valid_misclass",
+    "best_valid_accuracy",
+    "best_test_misclass",
+    "best_test_accuracy",
+    "last_test_misclass",
+    "last_test_accuracy",
+    "n_train_trials",
+    "n_valid_trials",
+    "n_test_trials",
+    "n_channels",
+    "n_times",
+    "train_data",
+    "valid_data",
+    "test_data",
+    "split_mode",
+    "notes",
+    "error",
+]
+
+
+def append_row(results_csv, row):
+    Path(results_csv).parent.mkdir(parents=True, exist_ok=True)
+    results_csv = Path(results_csv)
+    file_exists = results_csv.exists()
+
+    with results_csv.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=RESULT_COLUMNS)
+
+        if not file_exists or results_csv.stat().st_size == 0:
+            writer.writeheader()
+
+        writer.writerow({column: row.get(column, "") for column in RESULT_COLUMNS})
+
+
+def save_success(config, row):
+    append_row(config.results_csv, row)
+
+
+def save_failure(config, experiment_type, subject_id, seed, error):
+    row = {
+        "status": "failed",
+        "experiment_type": experiment_type,
+        "subject_id": subject_id,
+        "seed": seed,
+        "error": repr(error),
+    }
+
+    append_row(config.results_csv, row)
+
+
+def load_completed(config, experiment_type):
+    path = Path(config.results_csv)
+
+    if not path.exists():
+        return set()
+
+    df = pd.read_csv(path)
+
+    if len(df) == 0:
+        return set()
+
+    successful = df[
+        (df["status"] == "success")
+        & (df["experiment_type"] == experiment_type)
+    ]
+
+    return set(
+        (int(row["subject_id"]), int(row["seed"]))
+        for _, row in successful.iterrows()
+    )
+
+========================================================================
+FILE: experiments/run.py
+========================================================================
+import traceback
+
+from pipeline.braindecode_setup import apply_compatibility_patches, setup_logging
+from pipeline.classifier import run_classifier
+from pipeline.config import CONFIG
+from pipeline.data import load_train_valid_test
+from pipeline.generators import apply_experiment_transformation
+from pipeline.results import load_completed, save_failure, save_success
+
+
+def run_all_experiments(config):
+    apply_compatibility_patches()
+    setup_logging()
+
+    for experiment_type in config.experiment_names:
+        completed = load_completed(config, experiment_type)
+
+        print("\n" + "=" * 80, flush=True)
+        print(f"Running experiment: {experiment_type}", flush=True)
+        print(f"Combined results file: {config.results_csv}", flush=True)
+        print("=" * 80, flush=True)
+
+        total_runs = 0
+        successful_runs = 0
+        skipped_runs = 0
+        failed_runs = 0
+
+        for subject_id in config.subject_numbers:
+            for seed in config.random_seeds:
+                total_runs += 1
+
+                if (subject_id, seed) in completed:
+                    skipped_runs += 1
+                    print(
+                        f"SKIP experiment={experiment_type}, subject={subject_id}, seed={seed}",
+                        flush=True,
+                    )
+                    continue
+
+                print(
+                    f"START experiment={experiment_type}, subject={subject_id}, seed={seed}",
+                    flush=True,
+                )
+
+                try:
+                    train_set, valid_set, test_set = load_train_valid_test(
+                        subject_id=subject_id,
+                        config=config,
+                    )
+
+                    (
+                        train_set,
+                        valid_set,
+                        test_set,
+                        train_data,
+                        split_mode,
+                        notes,
+                    ) = apply_experiment_transformation(
+                        train_set=train_set,
+                        valid_set=valid_set,
+                        test_set=test_set,
+                        experiment_type=experiment_type,
+                        subject_id=subject_id,
+                        seed=seed,
+                    )
+
+                    row = run_classifier(
+                        train_set=train_set,
+                        valid_set=valid_set,
+                        test_set=test_set,
+                        experiment_type=experiment_type,
+                        subject_id=subject_id,
+                        seed=seed,
+                        train_data=train_data,
+                        split_mode=split_mode,
+                        notes=notes,
+                        config=config,
+                    )
+
+                    save_success(config, row)
+                    successful_runs += 1
+
+                    print(
+                        f"DONE experiment={experiment_type}, subject={subject_id}, seed={seed} | "
+                        f"best_epoch={row['best_epoch']} | "
+                        f"best_valid_misclass={row['best_valid_misclass']:.4f} | "
+                        f"best_test_misclass={row['best_test_misclass']:.4f} | "
+                        f"best_test_accuracy={row['best_test_accuracy']:.4f} | "
+                        f"last_test_misclass={row['last_test_misclass']:.4f}",
+                        flush=True,
+                    )
+
+                except Exception as error:
+                    failed_runs += 1
+                    print("\nFULL TRACEBACK:", flush=True)
+                    traceback.print_exc()
+
+                    save_failure(
+                        config=config,
+                        experiment_type=experiment_type,
+                        subject_id=subject_id,
+                        seed=seed,
+                        error=error,
+                    )
+
+                    print(
+                        f"FAILED experiment={experiment_type}, subject={subject_id}, seed={seed} | {repr(error)}",
+                        flush=True,
+                    )
+
+        print(
+            f"SUMMARY experiment={experiment_type}, total={total_runs}, "
+            f"done={successful_runs}, skipped={skipped_runs}, failed={failed_runs}",
+            flush=True,
+        )
+
+    print(f"SUMMARY all results saved to: {config.results_csv}", flush=True)
+
+
+if __name__ == "__main__":
+    run_all_experiments(CONFIG)
+
+========================================================================
+FILE: experiments/vae_make.py
+========================================================================
+import argparse
+import random
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+
+
+def parse_int_list(value):
+    return [int(x.strip()) for x in value.split(",") if x.strip()]
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def add_vae_repo_to_path(repo_path):
+    repo_path = Path(repo_path).resolve()
+
+    if not repo_path.exists():
+        raise FileNotFoundError(f"VAE repo folder not found: {repo_path}")
+
+    sys.path.insert(0, str(repo_path))
+
+
+def reconstruct_dataset(model, dataset, batch_size, device):
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+    all_recon = []
+    all_labels = []
+
+    model.eval()
+
+    with torch.no_grad():
+        for x_batch, y_batch in loader:
+            x_batch = x_batch.to(device)
+
+            # hvEEGNet has a reconstruct method.
+            x_recon = model.reconstruct(x_batch, no_grad=True)
+
+            all_recon.append(x_recon.detach().cpu().numpy())
+            all_labels.append(y_batch.detach().cpu().numpy())
+
+    X_recon_raw = np.concatenate(all_recon, axis=0)
+    y = np.concatenate(all_labels, axis=0)
+
+    # Expected native shape is usually:
+    # trials x 1 x channels x time
+    if X_recon_raw.ndim == 4 and X_recon_raw.shape[1] == 1:
+        X_recon = X_recon_raw[:, 0, :, :]
+    elif X_recon_raw.ndim == 3:
+        X_recon = X_recon_raw
+    else:
+        X_recon = np.squeeze(X_recon_raw)
+
+        if X_recon.ndim != 3:
+            raise ValueError(
+                f"Could not convert reconstructed EEG to 3D. "
+                f"Original shape was {X_recon_raw.shape}, squeezed shape is {X_recon.shape}"
+            )
+
+    return X_recon.astype(np.float32), y.astype(np.int64), X_recon_raw.shape
+
+
+def train_and_save_one_subject(args, subject_id, seed):
+    set_seed(seed)
+    add_vae_repo_to_path(args.repo)
+
+    from library.dataset import preprocess as pp
+    from library.config import config_dataset as cd
+    from library.config import config_training as ct
+    from library.config import config_model as cm
+    from library.training import train_generic
+
+    print(f"START VAE subject={subject_id} seed={seed}", flush=True)
+
+    dataset_config = cd.get_moabb_dataset_config([subject_id])
+
+    train_config = ct.get_config_vEEGNet_training()
+    train_config["epochs"] = args.epochs
+    train_config["batch_size"] = args.batch_size
+    train_config["wandb_training"] = False
+    train_config["print_var"] = True
+    train_config["device"] = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
+    train_config["path_to_save_model"] = str(
+        Path(args.out_dir) / "models" / f"S{subject_id:02d}_seed{seed}"
+    )
+    train_config["model_artifact_name"] = f"vae_S{subject_id:02d}_seed{seed}"
+    train_config["notes"] = "local VAE reconstruction for downstream classifier"
+
+    C = 22
+
+    if dataset_config["resample_data"]:
+        sampling_freq = dataset_config["resample_freq"]
+    else:
+        sampling_freq = 250
+
+    T = int((dataset_config["trial_end"] - dataset_config["trial_start"]) * sampling_freq)
+
+    type_decoder = 0
+    parameters_map_type = 0
+
+    model_config = cm.get_config_hierarchical_vEEGNet(
+        C,
+        T,
+        type_decoder,
+        parameters_map_type,
+    )
+
+    train_config["measure_metrics_during_training"] = model_config["use_classifier"]
+    train_config["use_classifier"] = model_config["use_classifier"]
+
+    print("Loading Dataset 2a through VAE repo pipeline...", flush=True)
+
+    # Leakage-safe fixed split settings.
+    # These make the data split fixed across model seeds.
+    # Model seeds may change VAE initialisation/training randomness,
+    # but not which trials are train/validation.
+    dataset_config['percentage_split_train_test'] = -1
+    dataset_config['percentage_split_train_validation'] = 0.9
+    dataset_config['seed_split'] = 42
+
+    train_dataset, validation_dataset, test_dataset = pp.get_dataset_d2a(dataset_config)
+    # Save the exact split indices used by the VAE repo.
+    # This is needed so the downstream classifier can use:
+    #   train = VAE reconstructed training trials
+    #   validation = real validation trials
+    #   test = real official test/session trials
+    from library.dataset import support_function as vae_split_sf
+    import os
+    import numpy as _np
+
+    n_train_before_validation = len(train_dataset) + len(validation_dataset)
+    fixed_train_idx, fixed_validation_idx = vae_split_sf.get_idx_to_split_data(
+        n_train_before_validation,
+        dataset_config['percentage_split_train_validation'],
+        dataset_config['seed_split']
+    )
+
+    split_dir = Path(args.out_dir) / "splits"
+    split_dir.mkdir(parents=True, exist_ok=True)
+    split_path = split_dir / f"S{subject_id:02d}_seed{seed}_fixed_split.npz"
+
+    _np.savez(
+        split_path,
+        train_idx=fixed_train_idx,
+        validation_idx=fixed_validation_idx,
+        subject_id=subject_id,
+        seed=seed,
+        split_seed=dataset_config['seed_split'],
+        percentage_split_train_validation=dataset_config['percentage_split_train_validation'],
+        percentage_split_train_test=dataset_config['percentage_split_train_test'],
+        n_train_before_validation=n_train_before_validation,
+        n_vae_train=len(train_dataset),
+        n_vae_validation=len(validation_dataset),
+        n_test=len(test_dataset) if test_dataset is not None else -1,
+        note="VAE trained only on train_idx; validation_idx saved for downstream real validation; official test remains separate."
+    )
+    print(f"Saved fixed split indices: {split_path}")
+
+
+    if validation_dataset is None:
+        raise RuntimeError("Validation dataset is None. The VAE training code needs validation data.")
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=train_config["batch_size"],
+        shuffle=True,
+    )
+
+    validation_loader = torch.utils.data.DataLoader(
+        validation_dataset,
+        batch_size=train_config["batch_size"],
+        shuffle=True,
+    )
+
+    model_config["input_size"] = train_dataset[0][0].unsqueeze(0).shape
+
+    model = train_generic.get_untrained_model(
+        "hvEEGNet_shallow",
+        model_config,
+    )
+
+    device = train_config["device"]
+    model.to(device)
+
+    loss_function = train_generic.get_loss_function(
+        "hvEEGNet_shallow",
+        train_config,
+    )
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=train_config["lr"],
+        weight_decay=train_config["optimizer_weight_decay"],
+    )
+
+    if train_config["use_scheduler"]:
+        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer,
+            gamma=train_config["lr_decay_rate"],
+        )
+    else:
+        lr_scheduler = None
+
+    Path(train_config["path_to_save_model"]).mkdir(parents=True, exist_ok=True)
+
+    print("Training VAE...", flush=True)
+
+    train_generic.train(
+        model,
+        loss_function,
+        optimizer,
+        [train_loader, validation_loader],
+        train_config,
+        lr_scheduler,
+        model_artifact=None,
+    )
+
+    best_model_path = Path(train_config["path_to_save_model"]) / "model_BEST.pth"
+
+    if best_model_path.exists():
+        state = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(state)
+        print(f"Loaded best VAE model: {best_model_path}", flush=True)
+    else:
+        print("WARNING: model_BEST.pth not found. Using final model state.", flush=True)
+
+    print("Reconstructing VAE training EEG...", flush=True)
+
+    X_recon, y, original_recon_shape = reconstruct_dataset(
+        model=model,
+        dataset=train_dataset,
+        batch_size=train_config["batch_size"],
+        device=device,
+    )
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = out_dir / f"S{subject_id:02d}_seed{seed}_vae_recon.npz"
+
+    np.savez_compressed(
+        out_path,
+        X_recon=X_recon,
+        y=y,
+        subject_id=subject_id,
+        seed=seed,
+        original_recon_shape=np.asarray(original_recon_shape),
+        final_shape=np.asarray(X_recon.shape),
+        source="hvEEGNet_paper_native_reconstruction",
+    )
+
+    print(f"DONE VAE subject={subject_id} seed={seed}", flush=True)
+    print(f"Saved: {out_path}", flush=True)
+    print(f"X_recon shape: {X_recon.shape}", flush=True)
+    print(f"y shape: {y.shape}", flush=True)
+    print(f"labels: {np.unique(y, return_counts=True)}", flush=True)
+
+
+def compare_run_splits(run1_dir, run2_dir, subjects, seeds):
+    """
+    Confirm that both reconstruction runs used exactly the same
+    train and validation trial indices.
+    """
+    run1_dir = Path(run1_dir)
+    run2_dir = Path(run2_dir)
+
+    checked = 0
+    missing = []
+
+    for subject_id in subjects:
+        for seed in seeds:
+            filename = f"S{subject_id:02d}_seed{seed}_fixed_split.npz"
+
+            run1_path = run1_dir / "splits" / filename
+            run2_path = run2_dir / "splits" / filename
+
+            if not run1_path.exists() or not run2_path.exists():
+                missing.append(filename)
+                continue
+
+            with np.load(run1_path) as run1_split, np.load(run2_path) as run2_split:
+                train_matches = np.array_equal(
+                    run1_split["train_idx"],
+                    run2_split["train_idx"],
+                )
+                validation_matches = np.array_equal(
+                    run1_split["validation_idx"],
+                    run2_split["validation_idx"],
+                )
+
+            if not train_matches or not validation_matches:
+                raise RuntimeError(
+                    f"Run-1 and run-2 splits do not match for {filename}"
+                )
+
+            checked += 1
+
+    print(
+        f"Verified identical run-1/run-2 splits for {checked} "
+        f"subject-seed combinations.",
+        flush=True,
+    )
+
+    if missing:
+        print(
+            "Split comparison skipped for missing files: "
+            + ", ".join(missing),
+            flush=True,
+        )
+
+
+def run_in_fresh_process(args, experiment):
+    """
+    Run each repeated experiment in a fresh Python process so run 1
+    and run 2 begin from equivalent process states.
+    """
+    command = [
+        sys.executable,
+        "-u",
+        str(Path(__file__).resolve()),
+        "--experiment",
+        experiment,
+        "--repo",
+        args.repo,
+        "--run1-dir",
+        args.run1_dir,
+        "--run2-dir",
+        args.run2_dir,
+        "--subjects",
+        args.subjects,
+        "--seeds",
+        args.seeds,
+        "--epochs",
+        str(args.epochs),
+        "--batch-size",
+        str(args.batch_size),
+    ]
+
+    if args.cuda:
+        command.append("--cuda")
+
+    print(
+        f"Launching {experiment} in a fresh Python process.",
+        flush=True,
+    )
+
+    subprocess.run(command, check=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--repo", default="external/vae_repo")
+
+    parser.add_argument(
+        "--experiment",
+        choices=["run1", "run2", "both"],
+        default="run2",
+        help=(
+            "Choose which repeated VAE experiment to run. "
+            "'both' runs run1 first and then run2."
+        ),
+    )
+
+    parser.add_argument("--run1-dir", default="outputs/vae_runs/run1")
+    parser.add_argument("--run2-dir", default="outputs/vae_runs/run2")
+
+    parser.add_argument("--subjects", default="1")
+    parser.add_argument("--seeds", default="0")
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=30)
+    parser.add_argument("--cuda", action="store_true")
+
+    args = parser.parse_args()
+
+    subjects = parse_int_list(args.subjects)
+    seeds = parse_int_list(args.seeds)
+
+    if args.experiment == "both":
+        run_in_fresh_process(args, "run1")
+        run_in_fresh_process(args, "run2")
+
+        compare_run_splits(
+            args.run1_dir,
+            args.run2_dir,
+            subjects,
+            seeds,
+        )
+        return
+
+    if args.experiment == "run1":
+        args.out_dir = args.run1_dir
+    else:
+        args.out_dir = args.run2_dir
+
+    print("=" * 70, flush=True)
+    print(f"VAE experiment: {args.experiment}", flush=True)
+    print(f"Output directory: {args.out_dir}", flush=True)
+    print(f"Subjects: {subjects}", flush=True)
+    print(f"Seeds: {seeds}", flush=True)
+    print(f"Epochs: {args.epochs}", flush=True)
+    print(f"Batch size: {args.batch_size}", flush=True)
+    print("=" * 70, flush=True)
+
+    for subject_id in subjects:
+        for seed in seeds:
+            train_and_save_one_subject(
+                args,
+                subject_id,
+                seed,
+            )
+
+    if args.experiment == "run2":
+        compare_run_splits(
+            args.run1_dir,
+            args.run2_dir,
+            subjects,
+            seeds,
+        )
+
+
+if __name__ == "__main__":
+    main()

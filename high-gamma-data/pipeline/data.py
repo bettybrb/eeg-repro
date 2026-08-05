@@ -1,7 +1,7 @@
 from pathlib import Path
 import numpy as np
 
-from braindecode_setup import apply_compatibility_patches
+from pipeline.braindecode_setup import apply_compatibility_patches
 
 apply_compatibility_patches()
 
@@ -19,7 +19,7 @@ def _make_signal_and_target(X, y):
 
 
 def load_train_valid_test(subject_id, config):
-    split_file = Path("saved_vae/classifier_real_splits") / f"S{subject_id:02d}_real_splits.npz"
+    split_file = Path("outputs/vae_runs/run1/classifier_real_splits") / f"S{subject_id:02d}_real_splits.npz"
 
     if not split_file.exists():
         raise FileNotFoundError(

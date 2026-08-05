@@ -6,14 +6,14 @@ from pathlib import Path
 
 import numpy as np
 
-from braindecode_setup import apply_compatibility_patches
+from pipeline.braindecode_setup import apply_compatibility_patches
 
 apply_compatibility_patches()
 
 from braindecode.datautil.signal_target import SignalAndTarget
 
-import run
-from config import CONFIG
+from experiments import run
+from pipeline.config import CONFIG
 
 
 RATIO_EXPERIMENTS = {
@@ -59,9 +59,9 @@ def copy_dataset(dataset):
 def find_real_split_directory(vae_dir, subjects):
     candidates = [
         vae_dir / "classifier_real_splits",
-        Path("saved_vae_run1/classifier_real_splits"),
-        Path("saved_vae_run2/classifier_real_splits"),
-        Path("saved_vae/classifier_real_splits"),
+        Path("outputs/vae_runs/run1/classifier_real_splits"),
+        Path("outputs/vae_runs/run2/classifier_real_splits"),
+        Path("outputs/vae_runs/run1/classifier_real_splits"),
     ]
 
     for candidate in candidates:
@@ -512,7 +512,7 @@ def main():
 
         output_file = Path(
             args.results
-            or "results/vae_reconstruction_run_comparison.csv"
+            or "outputs/results/vae_reconstruction_run_comparison.csv"
         )
 
         compare_reconstruction_runs(

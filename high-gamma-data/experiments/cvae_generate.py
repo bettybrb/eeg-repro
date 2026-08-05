@@ -514,11 +514,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--split-dir",
-        default="saved_vae_run1/classifier_real_splits",
+        default="outputs/vae_runs/run1/classifier_real_splits",
     )
     parser.add_argument(
         "--output-dir",
-        default="saved_shared_cvae_generated",
+        default="outputs/generated/shared_cvae",
     )
     parser.add_argument(
         "--subjects",

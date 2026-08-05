@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from vae_make import parse_int_list, set_seed
+from experiments.vae_make import parse_int_list, set_seed
 
 
 def add_repo(path):
@@ -179,11 +179,11 @@ def main():
     )
     parser.add_argument(
         "--model-dir",
-        default="saved_vae_class_generated",
+        default="outputs/generated/class_specific_vae",
     )
     parser.add_argument(
         "--out-dir",
-        default="saved_vae_class_reconstructed",
+        default="outputs/reconstructed/class_specific_vae",
     )
     parser.add_argument(
         "--subjects",
