@@ -1,0 +1,6 @@
+ratio_method,synthetic_percentage,macro_mean_test_accuracy,participant_std_test_accuracy,n_subjects,n_classifier_runs
+vae_replace_0pct_real,0,0.6923868312757202,0.16064399728985967,9,27
+vae_replace_25pct_real,25,0.6845421810699589,0.17466383931405777,9,81
+vae_replace_50pct_real,50,0.6907150205761317,0.15740031529048368,9,81
+vae_replace_75pct_real,75,0.6840706447187929,0.1713753984334538,9,81
+vae_replace_100pct_real,100,0.6806412894375858,0.16619063016558974,9,81

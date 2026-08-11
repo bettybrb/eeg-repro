@@ -1,0 +1,6 @@
+ratio_method,synthetic_percentage,macro_mean_test_accuracy,participant_std_test_accuracy,n_subjects,n_classifier_runs
+gaussian_cct_replace_0pct_real,0,0.6923868312757202,0.16064399728985967,9,27
+gaussian_cct_replace_25pct_real,25,0.6194701646090536,0.18423956418616333,9,81
+gaussian_cct_replace_50pct_real,50,0.563485939643347,0.1612037093257321,9,81
+gaussian_cct_replace_75pct_real,75,0.49789951989026066,0.1381074649167764,9,81
+gaussian_cct_replace_100pct_real,100,0.3191015089163238,0.0503813727999239,9,81
